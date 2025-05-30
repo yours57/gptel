@@ -80,7 +80,15 @@ list."
     (cl-loop
      for part across parts
      for tx = (plist-get part :text)
-     if (and tx (not (eq tx :null))) collect tx into content-strs
+     if (and tx (not (eq tx :null)))
+     if (plist-get part :thought)
+     do (unless (plist-get info :reasoning-block)
+          (plist-put info :reasoning-block 'in))
+     (plist-put info :reasoning (concat (plist-get info :reasoning) tx))
+     else do
+     (if (eq (plist-get info :reasoning-block) 'in)
+       (plist-put info :reasoning-block t))
+     and collect tx into content-strs end
      else if (plist-get part :functionCall)
      collect (copy-sequence it) into tool-use
      finally do                         ;Add text and tool-calls to prompts list
@@ -134,6 +142,9 @@ list."
       (setq params
             (plist-put params
                        :maxOutputTokens gptel-max-tokens)))
+    (when gptel-include-reasoning
+      (setq params
+            (plist-put params :thinkingConfig '(:includeThoughts t))))
     (when params
       (plist-put prompts-plist
                  :generationConfig params))
@@ -256,9 +267,7 @@ See generic implementation for full documentation."
              finally return prompts)))
 
 (cl-defmethod gptel--parse-buffer ((backend gptel-gemini) &optional max-entries)
-  (let ((prompts) (prev-pt (point))
-        (include-media (and gptel-track-media (or (gptel--model-capable-p 'media)
-                                                  (gptel--model-capable-p 'url)))))
+  (let ((prompts) (prev-pt (point)))
     (if (or gptel-mode gptel-track-response)
         (while (and (or (not max-entries) (>= max-entries 0))
                     (goto-char (previous-single-property-change
@@ -290,7 +299,7 @@ See generic implementation for full documentation."
                                    (line-number-at-pos (point))))))))
             ('ignore)
             ('nil
-             (if include-media
+             (if gptel-track-media
                  (when-let* ((content (gptel--gemini-parse-multipart
                                        (gptel--parse-media-links major-mode (point) prev-pt))))
                    (when (> (length content) 0)
@@ -331,6 +340,12 @@ format."
    `(:inline_data
      (:mime_type ,(plist-get part :mime)
       :data ,(gptel--base64-encode media)))
+   into parts-array
+   else if (plist-get part :textfile)
+   collect
+   (list :text (with-temp-buffer
+                 (gptel--insert-file-string (plist-get part :textfile))
+                 (buffer-string)))
    into parts-array
    finally return (vconcat parts-array)))
 
