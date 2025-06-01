@@ -1,6 +1,6 @@
 ;;; gptel-transient.el --- Transient menu for gptel  -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2023  Karthik Chikmagalur
+;; Copyright (C) 2023-2025  Karthik Chikmagalur
 
 ;; Author: Karthik Chikmagalur <karthikchikmagalur@gmail.com>
 ;; Keywords: convenience
@@ -106,7 +106,8 @@ For internal use only.")
          (t (let* ((suffix (substring (symbol-name key) 1))
                    (sym (or (intern-soft (concat "gptel-" suffix))
                             (intern-soft (concat "gptel--" suffix)))))
-              (or (and sym (boundp sym) (equal (eval sym) val))
+              (or (null sym)
+                  (and (boundp sym) (equal (eval sym) val))
                   (throw 'mismatch t)))))))))
 
 (defun gptel--get-directive (args)
@@ -1385,11 +1386,14 @@ This sets the variable `gptel-include-tool-results', which see."
         (prompt
          (cond
           ((member "m" args)
-           (read-string
-            (format "Ask %s: " (gptel-backend-name gptel-backend))
-            (and (use-region-p)
-                 (buffer-substring-no-properties
-                  (region-beginning) (region-end)))))
+           (minibuffer-with-setup-hook
+               (lambda () (add-hook 'completion-at-point-functions
+                               #'gptel-preset-capf nil t))
+             (read-string
+              (format "Ask %s: " (gptel-backend-name gptel-backend))
+              (and (use-region-p)
+                   (buffer-substring-no-properties
+                    (region-beginning) (region-end))))))
           ((member "y" args)
            (unless (car-safe kill-ring)
              (user-error "`kill-ring' is empty!  Nothing to send"))
@@ -1494,6 +1498,7 @@ This sets the variable `gptel-include-tool-results', which see."
                  (gptel--merge-additional-directive system-extra)
                gptel--system-message)
              :callback callback
+             :transforms gptel-prompt-transform-functions
              :fsm (gptel-make-fsm :handlers gptel-send--handlers)
              :dry-run dry-run)
 
