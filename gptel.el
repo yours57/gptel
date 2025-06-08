@@ -1017,14 +1017,12 @@ Note: This will move the cursor."
           (scroll-up-command))
       (error nil))))
 
-(defsubst gptel-prompt-prefix-string ()
+(defun gptel-prompt-prefix-string ()
   "Prefix before user prompts in `gptel-mode'."
-  (declare (side-effect-free t))
   (or (alist-get major-mode gptel-prompt-prefix-alist) ""))
 
-(defsubst gptel-response-prefix-string ()
+(defun gptel-response-prefix-string ()
   "Prefix before LLM responses in `gptel-mode'."
-  (declare (side-effect-free t))
   (or (alist-get major-mode gptel-response-prefix-alist) ""))
 
 (defun gptel-beginning-of-response (&optional _ _ arg)
