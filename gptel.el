@@ -3,7 +3,7 @@
 ;; Copyright (C) 2023-2025  Karthik Chikmagalur
 
 ;; Author: Karthik Chikmagalur <karthik.chikmagalur@gmail.com>
-;; Version: 0.9.8
+;; Version: 0.9.8.5
 ;; Package-Requires: ((emacs "27.1") (transient "0.7.4") (compat "29.1.4.1"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/karthink/gptel
@@ -663,8 +663,8 @@ the same as t."
      :capabilities (reasoning media tool-use json url)
      :mime-types ("image/jpeg" "image/png" "image/gif" "image/webp")
      :context-window 200
-     :input-cost 10
-     :output-cost 40
+     :input-cost 2
+     :output-cost 8
      :cutoff-date "2024-05")
     (o3-mini
      :description "High intelligence at the same cost and latency targets of o1-mini"
@@ -3729,7 +3729,7 @@ Add this to `completion-at-point-functions'."
   (and gptel--known-presets
        (save-excursion
          (let ((num (- (skip-syntax-backward "w_"))))
-           (when (= (char-before) ?@)
+           (when (eql (char-before) ?@)
              (list (point) (+ (point) num)
                    gptel--known-presets
                    :exclusive 'no
