@@ -906,6 +906,14 @@ or
 Each entry has the form (PROCESS . (FSM ABORT-CLOSURE))
 If the ABORT-CLOSURE is called, it must abort the PROCESS.")
 
+(defvar gptel--request-params nil
+  "Extra parameters sent with each gptel request.
+
+These parameters are combined with model-specific and backend-specific
+:request-params before sending a request, which see.  Warning: values
+incompatible with the active backend can break gptel.  Do not use this
+variable unless you know what you're doing!")
+
 
 ;;; Utility functions
 
@@ -1084,7 +1092,7 @@ For BUF, START, END and BODY-THUNK see `gptel--with-buffer-copy'."
                       gptel-mode gptel-track-response gptel-track-media
                       gptel-use-tools gptel-tools gptel-use-curl
                       gptel-use-context gptel--num-messages-to-send
-                      gptel-stream gptel-include-reasoning
+                      gptel-stream gptel-include-reasoning gptel--request-params
                       gptel-temperature gptel-max-tokens gptel-cache))
         (set (make-local-variable sym) (buffer-local-value sym buf)))
       (when (and start end) (insert-buffer-substring buf start end))
@@ -3095,8 +3103,11 @@ See `gptel-curl--get-response' for its contents.")
                          ((not (string-blank-p resp))))
                 (string-trim resp))
               http-status http-msg))
-       ((plist-get response :error)
-        (list nil http-status http-msg (plist-get response :error)))
+       ((and-let* ((error-data
+                    (cond ((plistp response) (plist-get response :error))
+                          ((arrayp response)
+                           (cl-some (lambda (el) (plist-get el :error)) response)))))
+          (list nil http-status http-msg error-data)))
        ((eq response 'json-read-error)
         (list nil http-status (concat "(" http-msg ") Malformed JSON in response.") "json-read-error"))
        (t (list nil http-status (concat "(" http-msg ") Could not parse HTTP response.")
