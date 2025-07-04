@@ -3668,7 +3668,7 @@ PRESET is a spec (plist) of keys and values."
     (while index
       (setq key (pop index) val (pop index))
       (pcase key
-        (:description)
+        ((or :description :pre :post))
         (:parents
          (mapc (lambda (parent-preset)
                  (nconc syms (gptel--preset-syms
