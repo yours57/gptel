@@ -40,6 +40,7 @@
 (defvar gptel-track-media)
 (defvar gptel-use-tools)
 (defvar gptel-tools)
+(defvar gptel--schema)
 (declare-function gptel-context--collect-media "gptel-context")
 (declare-function gptel--base64-encode "gptel")
 (declare-function gptel--trim-prefixes "gptel")
@@ -58,6 +59,7 @@
 (declare-function gptel-context--wrap "gptel-context")
 (declare-function gptel--inject-prompt "gptel")
 (declare-function gptel--parse-tools "gptel")
+(declare-function gptel--parse-schema "gptel")
 
 ;; JSON conversion semantics used by gptel
 ;; empty object "{}" => empty list '() == nil
@@ -217,7 +219,9 @@ information if the stream contains it."
                   ;; No text content, so look for tool calls
                   (when-let* ((tool-call (map-nested-elt delta '(:tool_calls 0)))
                               (func (plist-get tool-call :function)))
-                    (if (plist-get func :name) ;new tool block begins
+                    (if (and (plist-get func :name)
+                             ;; TEMP: This check is for litellm compatibility, should be removed
+                             (not (equal (plist-get func :name) "null"))) ; new tool block begins
                         (progn
                           (when-let* ((partial (plist-get info :partial_json)))
                             (let* ((prev-tool-call (car (plist-get info :tool-use)))
@@ -307,12 +311,23 @@ Mutate state INFO with response metadata."
       (plist-put prompts-plist
                  (if reasoning-model-p :max_completion_tokens :max_tokens)
                  gptel-max-tokens))
+    (when gptel--schema
+      (plist-put prompts-plist
+                 :response_format (gptel--parse-schema backend gptel--schema)))
     ;; Merge request params with model and backend params.
     (gptel--merge-plists
      prompts-plist
      gptel--request-params
      (gptel-backend-request-params gptel-backend)
      (gptel--model-request-params  gptel-model))))
+
+(cl-defmethod gptel--parse-schema ((_backend gptel-openai) schema)
+  (list :type "json_schema"
+        :json_schema
+        (list :name (md5 (format "%s" (random)))
+              :schema (gptel--preprocess-schema
+                       (gptel--dispatch-schema-type schema))
+              :strict t)))
 
 ;; NOTE: No `gptel--parse-tools' method required for gptel-openai, since this is
 ;; handled by its defgeneric implementation
