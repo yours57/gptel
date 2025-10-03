@@ -366,9 +366,9 @@ Note: This will move the cursor."
   "Return the gptel response boundaries around point."
   (let (prop)
     (save-excursion
-      (when (text-property-search-backward
-             'gptel 'response t)
-        (when (setq prop (text-property-search-forward
+      (when (text-property-search-forward
+                          'gptel 'response t)
+        (when (setq prop (text-property-search-backward
                           'gptel 'response t))
           (cons (prop-match-beginning prop)
                 (prop-match-end prop)))))))
@@ -529,7 +529,7 @@ file."
 
 Intended to be added to `after-change-functions' in gptel chat buffers,
 which see for BEG, END and PRE."
-  (and (= pre 0) (< end (point-max))
+  (and (/= beg end) (< end (point-max))
        (and-let* ((val (get-text-property end 'gptel)))
          (add-text-properties
           beg end `(gptel ,val front-sticky (gptel))))))
@@ -821,9 +821,10 @@ No state transition here since that's handled by the process sentinels."
           (when gptel-mode (gptel--update-status " Empty response" 'success))
         (pulse-momentary-highlight-region start-marker tracking-marker)
         (when gptel-mode
-          (save-excursion (goto-char tracking-marker)
-                          (insert gptel-response-separator
-                                  (gptel-prompt-prefix-string)))
+          (unless (plist-get info :in-place)
+            (save-excursion (goto-char tracking-marker)
+                            (insert gptel-response-separator
+                                    (gptel-prompt-prefix-string))))
           (gptel--update-status  " Ready" 'success))))
     ;; Run hook in visible window to set window-point, BUG #269
     (if-let* ((gptel-window (get-buffer-window gptel-buffer 'visible)))
