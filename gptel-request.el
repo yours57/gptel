@@ -729,9 +729,10 @@ their MIME-types:
 
   (\"/path/to/image\" :mime \"image/png\")
 
-gptel tries to guess file MIME types, but is not always successful.
-Additional plist keys (besides :mime) are ignored, but support for more
-keys may be implemented in the future.
+gptel tries to guess file MIME types, but is not always successful, so
+it is recommended to provide it with non-text files.  Additional plist
+keys (besides :mime) are ignored, but support for more keys may be
+implemented in the future.
 
 Usage of context commands (such as `gptel-add' and `gptel-add-file')
 will modify this variable.  You can also set this variable
@@ -921,7 +922,7 @@ For BUF, START, END and BODY-THUNK see `gptel--with-buffer-copy'."
       (dolist (sym '( gptel-backend gptel--system-message gptel-model
                       gptel-mode gptel-track-response gptel-track-media
                       gptel-use-tools gptel-tools gptel-use-curl gptel--schema
-                      gptel-use-context gptel--num-messages-to-send
+                      gptel-use-context gptel-context gptel--num-messages-to-send
                       gptel-stream gptel-include-reasoning gptel--request-params
                       gptel-temperature gptel-max-tokens gptel-cache))
         (set (make-local-variable sym) (buffer-local-value sym buf)))
