@@ -204,8 +204,11 @@
 (declare-function gptel-org-set-topic "gptel-org")
 (declare-function gptel-org--save-state "gptel-org")
 (declare-function gptel-org--restore-state "gptel-org")
+(declare-function gptel-org--annotate-links "gptel-org")
 (define-obsolete-function-alias
   'gptel-set-topic 'gptel-org-set-topic "0.7.5")
+
+(declare-function markdown-link-at-pos "markdown-mode")
 
 (eval-when-compile
   (require 'subr-x))
@@ -276,6 +279,12 @@ transient menu interface provided by `gptel-menu'."
   :type 'file
   :group 'gptel)
 
+(defvar gptel-refresh-buffer-hook '(jit-lock-refontify)
+  "Hook run in gptel buffers after changing gptel's configuration.
+
+This hook runs in gptel chat buffers after making a change to gptel's
+configuration that might require a UI update.")
+
 (defvar-local gptel--bounds nil)
 (put 'gptel--bounds 'safe-local-variable #'always)
 
@@ -294,6 +303,12 @@ in any way.")
 (put 'gptel--backend-name 'safe-local-variable #'always)
 
 (defvar-local gptel--old-header-line nil)
+
+(defvar gptel--markdown-block-map
+  (define-keymap
+    "<tab>" 'gptel-markdown-cycle-block
+    "TAB"   'gptel-markdown-cycle-block)
+  "Keymap for folding and unfolding Markdown code blocks.")
 
 
 ;;; Utility functions
@@ -368,6 +383,83 @@ Note: This will move the cursor."
                     ((looking-back (concat (regexp-quote prefix) "?")
                                    (point-min))))
           (goto-char (match-beginning 0)))))))
+
+(defun gptel-markdown-cycle-block ()
+  "Cycle code blocks in Markdown."
+  (interactive)
+  (save-excursion
+    (forward-line 0)
+    (let (start end (parity 0))
+      (cond            ;Find start and end of block, with possible nested blocks
+       ((looking-at-p "^``` *\n")       ;end of block, find corresponding start
+        (setq parity -1 end (line-end-position))
+        (while (and (not (= parity 0)) (not (bobp)) (forward-line -1))
+          (cond ((looking-at-p "^``` *\n") (cl-decf parity))
+                ((looking-at-p "^``` ?[a-z]") (cl-incf parity))))
+        (when (= parity 0) (setq start (point))))
+
+       ((looking-at-p "^``` ?[a-z]") ;beginning of block, find corresponding end
+        (setq parity 1 start (point))
+        (while (and (not (= parity 0)) (not (eobp)) (forward-line 1))
+          (cond ((looking-at-p "^``` *\n") (cl-decf parity))
+                ((looking-at-p "^``` ?[a-z]") (cl-incf parity))))
+        (when (= parity 0) (setq end (line-end-position)))))
+      (when (and start end)
+        (goto-char start)
+        (end-of-line)
+        (pcase-let* ((`(,value . ,hide-ov)
+                      (get-char-property-and-overlay (point) 'invisible)))
+          (if (and hide-ov (eq value t))
+              (delete-overlay hide-ov)
+            (unless hide-ov (setq hide-ov (make-overlay (point) end)))
+            (overlay-put hide-ov 'invisible t)
+            (overlay-put hide-ov 'before-string
+                         (propertize "..." 'face 'shadow))))))))
+
+(defsubst gptel--annotate-link (ov link-status)
+  "Annotate link overlay OV according to LINK-STATUS.
+
+LINK-STATUS is a list of link properties relevant to gptel queries, of
+the form (valid . REST).  See `gptel-markdown--validate-link' for
+details.  Indicate the (in)validity of the link for inclusion with gptel
+queries via OV."
+  (cl-destructuring-bind
+      (valid _ path filep placementp readablep supportedp _mime)
+      link-status
+    (if valid
+        (progn
+          (overlay-put
+           ov 'before-string
+           (concat (propertize "SEND" 'face '(:inherit success :height 0.8))
+                   (if (display-graphic-p)
+                       (propertize " " 'display '(space :width 0.5)) " ")))
+          (overlay-put ov 'help-echo
+                       (format "Sending file %s with gptel requests" path)))
+      (overlay-put ov 'before-string
+                   (concat (propertize "!" 'face '(:inherit error))
+                           (propertize " " 'display '(space :width 0.3))))
+      (overlay-put
+       ov 'help-echo
+       (concat
+        "Sending only link text with gptel requests, "
+        "this link will not be followed to its source.\n\nReason: "
+        (cond
+         ((not filep) "Not a supported link type\
+ (Only \"file\" or \"attachment\" are supported)")
+         ((not placementp)
+          (concat
+           "\nNot a standalone link -- separate link from text around it. \n           (OR)
+Link failed to validate, see `gptel-markdown-validate-link' or `gptel-org-validate-link'."))
+         ((not readablep) (format "File %s is not readable" path))
+         ((not supportedp) (format "%s does not support binary file %s"
+                                   gptel-model path))))))))
+
+(defun gptel--annotate-link-clear (&optional beg end)
+  "Delete all gptel org link annotations between BEG and END."
+  (mapc #'delete-overlay
+        (cl-delete-if-not
+         (lambda (o) (overlay-get o 'gptel-track-media))
+         (overlays-in (or beg (point-min)) (or end (point-max))))))
 
 ;;;; Response text recognition
 
@@ -556,7 +648,7 @@ file."
 ;; NOTE: It's not clear that this is the best strategy:
 (add-to-list 'text-property-default-nonsticky '(gptel . t))
 
-(defun gptel--inherit-stickiness (beg end pre)
+(defun gptel--inherit-stickiness (beg end _pre)
   "Mark any change to an LLM response region as a response.
 
 Intended to be added to `after-change-functions' in gptel chat buffers,
@@ -565,6 +657,123 @@ which see for BEG, END and PRE."
        (and-let* ((val (get-text-property end 'gptel)))
          (add-text-properties
           beg end `(gptel ,val front-sticky (gptel))))))
+
+(defun gptel-markdown--annotate-links (beg end)
+  "Annotate Markdown links whose sources are eligible to be sent with `gptel-send.'
+
+Search between BEG and END."
+  (when gptel-track-media
+    (save-excursion
+      (goto-char beg) (forward-line -1)
+      (let ((link-ovs (cl-loop for o in (overlays-in (point) end)
+                               if (overlay-get o 'gptel-track-media)
+                               collect o into os finally return os)))
+        (while (re-search-forward gptel-markdown--link-regex end t)
+          (unless (gptel--in-response-p (1- (point)))
+            (let* ((link (markdown-link-at-pos (point)))
+                   (from (car link)) (to (cadr link))
+                   (link-status (gptel-markdown--validate-link link))
+                   (ov (cl-loop for o in (overlays-in from to)
+                                if (overlay-get o 'gptel-track-media)
+                                return o)))
+              (if ov                    ; Ensure overlay over each link
+                  (progn (move-overlay ov from to)
+                         (setq link-ovs (delq ov link-ovs)))
+                (setq ov (make-overlay from to nil t))
+                (overlay-put ov 'gptel-track-media t)
+                (overlay-put ov 'evaporate t)
+                (overlay-put ov 'priority -80))
+              ;; Check if link will be sent, and annotate accordingly
+              (gptel--annotate-link ov link-status))))
+        (and link-ovs (mapc #'delete-overlay link-ovs))))
+    `(jit-lock-bounds ,beg . ,end)))
+
+(defun gptel-use-header-line ()
+  "Set up the header-line for a gptel buffer."
+  (setq
+   header-line-format
+   (list
+    '(:eval (concat (propertize " " 'display '(space :align-to 0))
+                    (format "%s" (gptel-backend-name gptel-backend))))
+    (propertize " Ready" 'face 'success)
+    '(:eval
+      (let* ((model (gptel--model-name gptel-model))
+             (system
+              (propertize
+               (buttonize
+                (format "[Prompt: %s]"
+                        (or (car-safe (rassoc gptel--system-message gptel-directives))
+                            (gptel--describe-directive gptel--system-message 15)))
+                (lambda (&rest _) (gptel-system-prompt)))
+               'mouse-face 'highlight
+               'help-echo "System message for session"))
+             (context
+              (and gptel-context
+                   (cl-loop
+                    for entry in gptel-context
+                    if (bufferp (or (car-safe entry) entry)) count it into bufs
+                    else count (stringp (or (car-safe entry) entry)) into files
+                    finally return
+                    (propertize
+                     (buttonize
+                      (concat "[Context: "
+                              (and (> bufs 0) (format "%d buf" bufs))
+                              (and (> bufs 1) "s")
+                              (and (> bufs 0) (> files 0) ", ")
+                              (and (> files 0) (format "%d file" files))
+                              (and (> files 1) "s")
+                              "]")
+                      (lambda (&rest _)
+                        (require 'gptel-context)
+                        (gptel-context--buffer-setup)))
+                     'mouse-face 'highlight
+                     'help-echo "Active gptel context"))))
+             (toggle-track-media
+              (lambda (&rest _)
+                (setq-local gptel-track-media (not gptel-track-media))
+                (if gptel-track-media
+                    (progn
+                      (run-hooks 'gptel-refresh-buffer-hook)
+                      (message "Sending media from included links."))
+                  (without-restriction (gptel--annotate-link-clear))
+                  (message "Ignoring links.  Only link text will be sent."))
+                (run-at-time 0 nil #'force-mode-line-update)))
+             (track-media
+              (and (gptel--model-capable-p 'media)
+                   (if gptel-track-media
+                       (propertize
+                        (buttonize "[Sending media]" toggle-track-media)
+                        'mouse-face 'highlight
+                        'help-echo
+                        "Sending media from links/urls when supported.\nClick to toggle")
+                     (propertize
+                      (buttonize "[Ignoring media]" toggle-track-media)
+                      'mouse-face 'highlight
+                      'help-echo
+                      "Ignoring media from links/urls.\nClick to toggle"))))
+             (toggle-tools (lambda (&rest _) (interactive)
+                             (run-at-time 0 nil
+                                          (lambda () (call-interactively #'gptel-tools)))))
+             (tools (when (and gptel-use-tools gptel-tools)
+                      (propertize
+                       (buttonize (pcase (length gptel-tools)
+                                    (0 "[No tools]") (1 "[1 tool]")
+                                    (len (format "[%d tools]" len)))
+                                  toggle-tools)
+                       'mouse-face 'highlight
+                       'help-echo "Select tools"))))
+        (concat
+         (propertize
+          " " 'display
+          `(space :align-to (- right
+                               ,(+ 5 (length model) (length system)
+                                   (length track-media) (length context) (length tools)))))
+         tools (and track-media " ") track-media (and context " ") context " " system " "
+         (propertize
+          (buttonize (concat "[" model "]")
+                     (lambda (&rest _) (gptel-menu)))
+          'mouse-face 'highlight
+          'help-echo "Model in use")))))))
 
 ;;;###autoload
 (define-minor-mode gptel-mode
@@ -582,101 +791,33 @@ which see for BEG, END and PRE."
         (add-hook 'before-save-hook #'gptel--save-state nil t)
         (add-hook 'after-change-functions 'gptel--inherit-stickiness nil t)
         (gptel--prettify-preset)
-        (when (derived-mode-p 'org-mode)
+        (cond
+         ((derived-mode-p 'org-mode)
+          (require 'gptel-org)
+          (jit-lock-register 'gptel-org--annotate-links)
           ;; Work around bug in `org-fontify-extend-region'.
           (add-hook 'gptel-post-response-functions #'font-lock-flush nil t))
+         ((derived-mode-p 'markdown-mode)
+          (font-lock-add-keywords ;keymap is a font-lock-managed property in markdown-mode
+           nil '(("^```[ \t]*\\([[:alpha:]][^\n]*\\)?$" ;match code fences
+                  0 (list 'face nil 'keymap gptel--markdown-block-map))))
+          (jit-lock-register 'gptel-markdown--annotate-links)))
         (gptel--restore-state)
         (if gptel-use-header-line
-          (setq gptel--old-header-line header-line-format
-                header-line-format
-                (list '(:eval (concat (propertize " " 'display '(space :align-to 0))
-                               (format "%s" (gptel-backend-name gptel-backend))))
-                      (propertize " Ready" 'face 'success)
-                      '(:eval
-                        (let* ((model (gptel--model-name gptel-model))
-                              (system
-                               (propertize
-                                (buttonize
-                                 (format "[Prompt: %s]"
-                                  (or (car-safe (rassoc gptel--system-message gptel-directives))
-                                   (gptel--describe-directive gptel--system-message 15)))
-                                 (lambda (&rest _) (gptel-system-prompt)))
-                                'mouse-face 'highlight
-                                'help-echo "System message for session"))
-                              (context
-                               (and gptel-context
-                                    (cl-loop
-                                     for entry in gptel-context
-                                     if (bufferp (or (car-safe entry) entry)) count it into bufs
-                                     else count (stringp (or (car-safe entry) entry)) into files
-                                     finally return
-                                     (propertize
-                                      (buttonize
-                                       (concat "[Context: "
-                                               (and (> bufs 0) (format "%d buf" bufs))
-                                               (and (> bufs 1) "s")
-                                               (and (> bufs 0) (> files 0) ", ")
-                                               (and (> files 0) (format "%d file" files))
-                                               (and (> files 1) "s")
-                                               "]")
-                                       (lambda (&rest _)
-                                         (require 'gptel-context)
-                                         (gptel-context--buffer-setup)))
-                                      'mouse-face 'highlight
-                                      'help-echo "Active gptel context"))))
-                              (toggle-track-media
-                               (lambda (&rest _)
-                                 (setq-local gptel-track-media
-                                  (not gptel-track-media))
-                                 (if gptel-track-media
-                                     (message
-                                      (concat
-                                       "Sending media from included links.  To include media, create "
-                                       "a \"standalone\" link in a paragraph by itself, separated from surrounding text."))
-                                   (message "Ignoring image links.  Only link text will be sent."))
-                                 (run-at-time 0 nil #'force-mode-line-update)))
-                              (track-media
-                               (and (gptel--model-capable-p 'media)
-                                (if gptel-track-media
-                                    (propertize
-                                     (buttonize "[Sending media]" toggle-track-media)
-                                     'mouse-face 'highlight
-                                     'help-echo
-                                     "Sending media from standalone links/urls when supported.\nClick to toggle")
-                                  (propertize
-                                   (buttonize "[Ignoring media]" toggle-track-media)
-                                   'mouse-face 'highlight
-                                   'help-echo
-                                   "Ignoring images from standalone links/urls.\nClick to toggle"))))
-                              (toggle-tools (lambda (&rest _) (interactive)
-                                              (run-at-time 0 nil
-                                               (lambda () (call-interactively #'gptel-tools)))))
-                              (tools (when (and gptel-use-tools gptel-tools)
-                                      (propertize
-                                       (buttonize (pcase (length gptel-tools)
-                                                   (0 "[No tools]") (1 "[1 tool]")
-                                                   (len (format "[%d tools]" len)))
-                                        toggle-tools)
-                                       'mouse-face 'highlight
-                                       'help-echo "Select tools"))))
-                         (concat
-                          (propertize
-                           " " 'display
-                           `(space :align-to (- right
-                                              ,(+ 5 (length model) (length system)
-                                                (length track-media) (length context) (length tools)))))
-                          tools (and track-media " ") track-media (and context " ") context " " system " "
-                          (propertize
-                           (buttonize (concat "[" model "]")
-                            (lambda (&rest _) (gptel-menu)))
-                           'mouse-face 'highlight
-                           'help-echo "Model in use"))))))
+            (progn (setq gptel--old-header-line header-line-format)
+                   (gptel-use-header-line))
           (setq mode-line-process
-                '(:eval (concat " "
-                         (buttonize (gptel--model-name gptel-model)
-                            (lambda (&rest _) (gptel-menu))))))))
+                '(:eval (concat " " (buttonize (gptel--model-name gptel-model)
+                                               (lambda (&rest _) (gptel-menu))))))))
     (remove-hook 'before-save-hook #'gptel--save-state t)
     (remove-hook 'after-change-functions 'gptel--inherit-stickiness t)
+    (cond
+     ((derived-mode-p 'org-mode)
+      (jit-lock-unregister #'gptel-org--annotate-links)
+      (without-restriction (gptel--annotate-link-clear)))
+     ((derived-mode-p 'markdown-mode)
+      (jit-lock-unregister #'gptel-markdown--annotate-links)
+      (without-restriction (gptel--annotate-link-clear))))
     (gptel--prettify-preset)
     (if gptel-use-header-line
         (setq header-line-format gptel--old-header-line
@@ -1099,8 +1240,10 @@ Optional RAW disables text properties and transformation."
                                `("#+begin_reasoning\n" . ,(concat "\n#+end_reasoning"
                                                            gptel-response-separator))
                              ;; TODO(reasoning) remove properties and strip instead
-                             (cons (propertize "``` reasoning\n" 'gptel 'ignore)
-                                   (concat (propertize "\n```" 'gptel 'ignore)
+                             (cons (propertize "``` reasoning\n" 'gptel 'ignore
+                                               'keymap gptel--markdown-block-map)
+                                   (concat (propertize "\n```" 'gptel 'ignore
+                                                       'keymap gptel--markdown-block-map)
                                            gptel-response-separator)))))
                (if (eq include 'ignore)
                    (progn
@@ -1111,12 +1254,14 @@ Optional RAW disables text properties and transformation."
                  (gptel--insert-response (concat separator (car blocks)) info t)
                  (gptel--insert-response text info)
                  (gptel--insert-response (cdr blocks) info t))
-               (when (derived-mode-p 'org-mode) ;fold block
-                 (save-excursion
-                   (goto-char (plist-get info :tracking-marker))
-                   (search-backward "#+end_reasoning" start-marker t)
-                   (when (looking-at "^#\\+end_reasoning")
-                     (org-cycle)))))))))
+               (save-excursion
+                 (goto-char (plist-get info :tracking-marker))
+                 (if (derived-mode-p 'org-mode) ;fold block
+                     (progn (search-backward "#+end_reasoning" start-marker t)
+                            (when (looking-at "^#\\+end_reasoning")
+                              (org-cycle)))
+                   (when (re-search-backward "^```" start-marker t)
+                     (gptel-markdown-cycle-block)))))))))
       (`(tool-call . ,tool-calls)
        (gptel--display-tool-calls tool-calls info))
       (`(tool-result . ,tool-results)
@@ -1244,16 +1389,19 @@ for streaming responses only."
                  (concat (if (derived-mode-p 'org-mode)
                              "\n#+end_reasoning"
                            ;; TODO(reasoning) remove properties and strip instead
-                           (propertize "\n```" 'gptel 'ignore))
+                           (propertize "\n```" 'gptel 'ignore
+                                       'keymap gptel--markdown-block-map))
                          gptel-response-separator)
                  info t)
-                (when (derived-mode-p 'org-mode) ;fold block
-                  (ignore-errors
-                    (save-excursion
-                      (goto-char tracking-marker)
-                      (search-backward "#+end_reasoning" start-marker t)
-                      (when (looking-at "^#\\+end_reasoning")
-                        (org-cycle))))))
+                (ignore-errors          ;fold block
+                  (save-excursion
+                    (goto-char tracking-marker)
+                    (if (derived-mode-p 'org-mode)
+                        (progn (search-backward "#+end_reasoning" start-marker t)
+                               (when (looking-at "^#\\+end_reasoning")
+                                 (org-cycle)))
+                      (when (re-search-backward "^```" start-marker t)
+                        (gptel-markdown-cycle-block))))))
             (unless (and reasoning-marker tracking-marker
                          (= reasoning-marker tracking-marker))
               (let ((separator        ;Separate from response prefix if required
@@ -1266,7 +1414,8 @@ for streaming responses only."
                          (if (derived-mode-p 'org-mode)
                              "#+begin_reasoning\n"
                            ;; TODO(reasoning) remove properties and strip instead
-                           (propertize "``` reasoning\n" 'gptel 'ignore)))
+                           (propertize "``` reasoning\n" 'gptel 'ignore
+                                       'keymap gptel--markdown-block-map)))
                  info t)))
             (if (eq include 'ignore)
                 (progn
@@ -1438,13 +1587,15 @@ for tool call results.  INFO contains the state of the request."
                  (concat
                   separator
                   ;; TODO(tool) remove properties and strip instead of ignoring
-                  (propertize (format "``` tool %s" truncated-call) 'gptel 'ignore)
+                  (propertize (format "``` tool %s" truncated-call)
+                              'gptel 'ignore 'keymap gptel--markdown-block-map)
                   (propertize
                    ;; TODO(tool) escape markdown in result
                    (concat "\n" call "\n\n" result)
                    'gptel `(tool . ,id))
                   ;; TODO(tool) remove properties and strip instead of ignoring
-                  (propertize "\n```\n" 'gptel 'ignore))))
+                  (propertize "\n```\n" 'gptel 'ignore
+                              'keymap gptel--markdown-block-map))))
              info
              'raw)
          ;; tool-result insertion has updated the tracking marker
@@ -1454,13 +1605,13 @@ for tool call results.  INFO contains the state of the request."
                (move-marker tool-marker tracking-marker)
              (setq tool-marker (copy-marker tracking-marker nil))
              (plist-put info :tool-marker tool-marker))
-         (when (derived-mode-p 'org-mode) ;fold drawer
-           (ignore-errors
-             (save-excursion
-               (goto-char tracking-marker)
-               (forward-line -1)
-               (when (looking-at "^#\\+end_tool")
-                 (org-cycle))))))))))
+         (ignore-errors                 ;fold drawer
+           (save-excursion
+             (goto-char tracking-marker)
+             (forward-line -1)
+             (if (derived-mode-p 'org-mode)
+                 (when (looking-at-p "^#\\+end_tool") (org-cycle))
+               (when (looking-at-p "^```") (gptel-markdown-cycle-block))))))))))
 
 (defun gptel--format-tool-call (name arg-values)
   "Format a tool call for display in the buffer.

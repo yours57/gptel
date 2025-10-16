@@ -51,6 +51,7 @@
 (require 'text-property-search)
 (require 'cl-generic)
 (require 'map)
+(require 'mailcap)                    ;FIXME Avoid this somehow
 
 (declare-function json-read "json" ())
 (defvar json-object-type)
@@ -626,31 +627,17 @@ always handled separately."
 (defcustom gptel-track-media nil
   "Whether supported media in chat buffers should be sent.
 
-When the active `gptel-model' supports it, gptel can send text, images
-or other media from links in chat buffers to the LLM.  To use this, the
-following steps are required.
+When this is non-nil, gptel will send text, images or other media from
+links in chat buffers to the LLM.
 
-1. `gptel-track-media' (this variable) should be non-nil
-
-2. The LLM should provide vision or document support.  (See
-`gptel-make-openai', `gptel-make-anthropic', `gptel-make-ollama' or
-`gptel-make-gemini' for details on how to specify media support for
-models.)
-
-3. Only \"standalone\" links in chat buffers are considered.
-These are links on their own line with no surrounding text.
-Further:
-
-- In Org mode, only files or URLs of the form
-  [[/path/to/media][bracket links]] and <angle/link/path>
-  are sent.
-
-- In Markdown mode, only files or URLS of the form
-  [bracket link](/path/to/media) and <angle/link/path>
-  are sent.
+Sending images or other binary media from links requires the
+active `gptel-model' to support it.  See `gptel-make-openai',
+`gptel-make-anthropic', `gptel-make-ollama' or `gptel-make-gemini' for
+details on how to specify media support for models.
 
 This option has no effect in non-chat buffers.  To include
-media (including images) more generally, use `gptel-add'."
+media (including images) more generally, use `gptel-add' or
+`gptel-add-file'."
   :type 'boolean)
 
 (defcustom gptel-use-context 'system
@@ -740,6 +727,28 @@ buffer-locally, or let-bind it around calls to gptel queries, or via
 gptel presets."
   :type '(repeat string))
 
+(defcustom gptel-markdown-validate-link #'always
+  "Validate links to be sent as context with gptel queries.
+
+When `gptel-track-media' is enabled, this option determines if a
+supported link will be followed and its source included with gptel
+queries from Markdown buffers.  Currently only links to files are
+supported (along with web URLs if the model supports them).
+
+It should be a function that accepts a Markdown link and return non-nil
+if the link should be followed.  See `markdown-link-at-pos' for the
+structure of a Markdown link object.
+
+By default, all links are considered valid.
+
+Set this to `gptel--link-standalone-p' to only follow links placed on a
+line by themselves, separated from surrounding text."
+  :type '(choice
+          (const :tag "All links" always)
+          (const :tag "Standalone links" gptel--link-standalone-p)
+          (function :tag "Function"))
+  :group 'gptel)
+
 (defvar gptel--request-alist nil
   "Alist of active gptel requests.
 Each entry has the form (PROCESS . (FSM ABORT-CLOSURE))
@@ -779,6 +788,21 @@ See `gptel-backend'."
     '("--disable" "--location" "--silent" "--compressed"
       "-XPOST" "-y7200" "-Y1" "-D-"))
   "Arguments always passed to Curl for gptel queries.")
+
+(defvar gptel--link-type-cache nil
+  "Cache of checks for binary files.  Each alist entry maps an absolute
+file path to a cons cell of the form (t . binaryp), where binaryp is
+non-nil if the file is binary-encoded.")
+
+;; The following is derived from:
+;;
+;; (concat "\\(?:" markdown-regex-link-inline "\\|" markdown-regex-angle-uri "\\)")
+;;
+;; Since we want this known at compile time, when markdown-mode is not
+;; guaranteed to be available, we have to hardcode it.
+(defconst gptel-markdown--link-regex
+  "\\(?:\\(?1:!\\)?\\(?2:\\[\\)\\(?3:\\^?\\(?:\\\\\\]\\|[^]]\\)*\\|\\)\\(?4:\\]\\)\\(?5:(\\)\\s-*\\(?6:[^)]*?\\)\\(?:\\s-+\\(?7:\"[^\"]*\"\\)\\)?\\s-*\\(?8:)\\)\\|\\(<\\)\\([a-z][a-z0-9.+-]\\{1,31\\}:[^]	\n<>,;()]+\\)\\(>\\)\\)"
+  "Link regex for gptel-mode in Markdown mode.")
 
 
 ;;; Utility functions
@@ -945,18 +969,19 @@ Return nil if string collapses to empty string."
     (unless (string-empty-p trimmed)
       trimmed)))
 
-(defsubst gptel--link-standalone-p (beg end)
-  "Return non-nil if positions BEG and END are isolated.
+(defun gptel--link-standalone-p (link)
+  "Return non-nil if Markdown LINK is isolated.
 
-This means the extent from BEG to END is the only non-whitespace
-content on this line."
-  (save-excursion
-    (and (= beg (progn (goto-char beg) (beginning-of-line)
-                       (skip-chars-forward "\t ")
-                       (point)))
-         (= end (progn (goto-char end) (end-of-line)
-                       (skip-chars-backward "\t ")
-                       (point))))))
+This means the extent from the link beginning to end is the only
+non-whitespace content on its line."
+  (let ((beg (car link)) (end (cadr link)))
+    (save-excursion
+      (and (= beg (progn (goto-char beg) (beginning-of-line)
+                         (skip-chars-forward "\t ")
+                         (point)))
+           (= end (progn (goto-char end) (end-of-line)
+                         (skip-chars-backward "\t ")
+                         (point)))))))
 
 (defsubst gptel--curl-path ()
   "Curl executable to use."
@@ -2192,10 +2217,36 @@ or
   (list `(:text ,(buffer-substring-no-properties
                   beg end))))
 
-(defvar markdown-regex-link-inline)
-(defvar markdown-regex-angle-uri)
 (declare-function markdown-link-at-pos "markdown-mode")
 (declare-function mailcap-file-name-to-mime-type "mailcap")
+
+(defsubst gptel-markdown--validate-link (link)
+  "Validate a Markdown LINK as sendable under the current gptel settings.
+
+Return a form (validp link-type path . REST), where REST is a list
+explaining why sending the link is not supported by gptel.  Only the
+first nil value in REST is guaranteed to be correct."
+  (let ((mime))
+    (if-let* ((path (nth 3 link))
+              (prefix (or (string-search "://" path) 0))
+              (type (if (= prefix 0) "file" (substring path 0 prefix)))
+              (path (if (= prefix 0) path (substring path (+ prefix 3))))
+              (filep (member type `("file" ,@(and (gptel--model-capable-p 'url)
+                                                  '("http" "https" "ftp")))))
+              (placementp (funcall gptel-markdown-validate-link link))
+              (readablep (or (member type '("http" "https" "ftp"))
+                             (file-remote-p path)
+                             (file-readable-p path)))
+              (supportedp
+               (or (not (cdr (with-memoization
+                                 (alist-get (expand-file-name path)
+                                            gptel--link-type-cache
+                                            nil nil #'string=)
+                               (cons t (gptel--file-binary-p path)))))
+                   (gptel--model-mime-capable-p
+                    (setq mime (mailcap-file-name-to-mime-type path))))))
+        (list t type path filep placementp readablep supportedp mime)
+      (list nil type path filep placementp readablep supportedp mime))))
 
 (cl-defmethod gptel--parse-media-links ((_mode (eql 'markdown-mode)) beg end)
   "Parse text and actionable links between BEG and END.
@@ -2205,39 +2256,38 @@ Return a list of the form
   (:media \"/path/to/media.png\" :mime \"image/png\")
   (:text \"More text\"))
 for inclusion into the user prompt for the gptel request."
-  (require 'mailcap)                    ;FIXME Avoid this somehow
-  (let ((parts) (from-pt) (mime))
+  (let ((parts) (from-pt))
     (save-excursion
       (setq from-pt (goto-char beg))
-      (while (re-search-forward
-              (concat "\\(?:" markdown-regex-link-inline "\\|"
-                      markdown-regex-angle-uri "\\)")
-              end t)
-        (setq mime nil)
-        (when-let* ((link-at-pt (markdown-link-at-pos (point)))
-                    ((gptel--link-standalone-p
-                      (car link-at-pt) (cadr link-at-pt)))
-                    (path (nth 3 link-at-pt))
-                    (path (string-remove-prefix "file://" path)))
-          (cond
-           ((seq-some (lambda (p) (string-prefix-p p path))
-                      '("https:" "http:" "ftp:"))
-            ;; Collect text up to this image, and collect this image url
-            (when (gptel--model-capable-p 'url) ; FIXME This is not a good place
-                                        ; to check for url capability!
+      (while (re-search-forward gptel-markdown--link-regex end t)
+        (let* ((link-at-pt (markdown-link-at-pos (point)))
+               (link-status (gptel-markdown--validate-link link-at-pt)))
+          (cl-destructuring-bind
+              (valid type path filep placementp readablep supportedp mime)
+              link-status
+            (cond
+             ((and valid (member type '("http" "https" "ftp")))
+              ;; Collect text up to this image, and collect this image url
               (let ((text (buffer-substring-no-properties from-pt (car link-at-pt))))
                 (unless (string-blank-p text) (push (list :text text) parts))
                 (push (list :url path :mime mime) parts)
-                (setq from-pt (cadr link-at-pt)))))
-           ((file-readable-p path)
-            (if (or (not (gptel--file-binary-p path))
-                    (and (setq mime (mailcap-file-name-to-mime-type path))
-                         (gptel--model-mime-capable-p mime)))
-                ;; Collect text up to this image, and collect this image
-                (let ((text (buffer-substring-no-properties from-pt (car link-at-pt))))
-                  (unless (string-blank-p text) (push (list :text text) parts))
-                  (push (if mime (list :media path :mime mime) (list :textfile path)) parts)
-                  (setq from-pt (cadr link-at-pt)))
+                (setq from-pt (cadr link-at-pt))))
+             (valid   ; Collect text up to this link, and collect this link data
+              (let ((text (buffer-substring-no-properties from-pt (car link-at-pt))))
+                (unless (string-blank-p text) (push (list :text text) parts))
+                (push (if mime (list :media path :mime mime) (list :textfile path)) parts)
+                (setq from-pt (cadr link-at-pt))))
+             ((not filep)
+              (message "Link source not followed for unsupported link type \"%s\"." type))
+             ((not placementp)
+              (message
+               (if (eq gptel-markdown-validate-link 'gptel--link-standalone-p)
+                   "Ignoring non-standalone link \"%s\"."
+                 "Link %s failed to validate, see `gptel-markdown-validate-link'.")
+               path))
+             ((not readablep)
+              (message "Ignoring inaccessible file \"%s\"." path))
+             ((not supportedp)
               (message "Ignoring unsupported binary file \"%s\"." path)))))))
     (unless (= from-pt end)
       (push (list :text (buffer-substring-no-properties from-pt end)) parts))
