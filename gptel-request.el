@@ -723,8 +723,8 @@ For files, spec can include buffer spans and line number ranges, as well as
 the MIME type of the file:
 
   (\"/path/to/file\" :bounds ((start1 . end1) (start2 . end2) ...)
-                     :lines  ((from1 . to1) (from2 . end2) ...)
-                     :mime \"image/png\")
+                   :lines  ((from1 . to1) (from2 . end2) ...)
+                   :mime \"image/png\")
 
 gptel tries to guess file MIME types, but is not always successful, so
 it is recommended to provide it with non-text files.
@@ -2238,7 +2238,7 @@ first nil value in REST is guaranteed to be correct."
     (if-let* ((path (nth 3 link))
               (prefix (or (string-search "://" path) 0))
               (link-type (if (= prefix 0) "file" (substring path 0 prefix)))
-              (path (if (equal link-type "file")
+              (path (if (and (equal link-type "file") (> prefix 0))
                         (substring path (+ prefix 3)) path))
               (resource-type
                (or (and (equal link-type "file") 'file)
