@@ -224,6 +224,46 @@
 
 
 ;;; User options
+(defcustom gptel-pre-response-hook nil
+  "Hook run before inserting the LLM response into the current buffer.
+
+This hook is called in the buffer where the LLM response will be
+inserted.
+
+Note: this hook only runs if the request succeeds."
+  :type 'hook
+  :group 'gptel)
+
+(define-obsolete-variable-alias
+  'gptel-post-response-hook 'gptel-post-response-functions
+  "0.6.0"
+  "Post-response functions are now called with two arguments: the
+start and end buffer positions of the response.")
+
+(defcustom gptel-post-response-functions nil
+  "Abnormal hook run after inserting the LLM response into the current buffer.
+
+This hook is called in the buffer to which the LLM response is
+sent, and after the full response has been inserted.  Each
+function is called with two arguments: the response beginning and
+end positions.
+
+Note: this hook runs even if the request fails.  In this case the
+response beginning and end positions are both the cursor position
+at the time of the request."
+  :type 'hook
+  :group 'gptel)
+
+(add-hook 'gptel-post-response-functions 'pulse-momentary-highlight-region 70)
+
+(defcustom gptel-post-stream-hook nil
+  "Hook run after each insertion of the LLM's streaming response.
+
+This hook is called in the buffer from which the prompt was sent
+to the LLM, and after a text insertion."
+  :type 'hook
+  :group 'gptel)
+
 (defcustom gptel-save-state-hook nil
   "Hook run before gptel saves model parameters to a file.
 
@@ -1136,32 +1176,28 @@ No state transition here since that's handled by the process sentinels."
                               start-marker))
          ;; start-marker may have been moved if :buffer was read-only
          (gptel-buffer (marker-buffer start-marker)))
-    ;; Run hook in visible window to set window-point, BUG #269
-    (if-let* ((gptel-window (get-buffer-window gptel-buffer 'visible)))
-        (with-selected-window gptel-window
-          (mapc (lambda (f) (funcall f (marker-position start-marker)
-                                (marker-position tracking-marker)))
-                (plist-get info :post))
-          (run-hook-with-args
-           'gptel-post-response-functions
-           (marker-position start-marker) (marker-position tracking-marker)))
-      (with-current-buffer gptel-buffer
-        (mapc (lambda (f) (funcall f (marker-position start-marker)
-                              (marker-position tracking-marker)))
-              (plist-get info :post))
-        (run-hook-with-args
-         'gptel-post-response-functions
-         (marker-position start-marker) (marker-position tracking-marker))))
     (with-current-buffer gptel-buffer
       (if (not tracking-marker)         ;Empty response
           (when gptel-mode (gptel--update-status " Empty response" 'success))
-        (pulse-momentary-highlight-region start-marker tracking-marker)
+        (set-marker-insertion-type tracking-marker nil) ;Lock tracking-marker
         (when gptel-mode
           (unless (plist-get info :in-place)
             (save-excursion (goto-char tracking-marker)
                             (insert gptel-response-separator
                                     (gptel-prompt-prefix-string))))
-          (gptel--update-status  " Ready" 'success))))))
+          (gptel--update-status  " Ready" 'success))))
+    ;; Run hook in visible window to set window-point, BUG #269
+    (if-let* ((gptel-window (get-buffer-window gptel-buffer 'visible)))
+        (with-selected-window gptel-window
+          (mapc (lambda (f) (funcall f info)) (plist-get info :post))
+          (run-hook-with-args
+           'gptel-post-response-functions
+           (marker-position start-marker) (marker-position tracking-marker)))
+      (with-current-buffer gptel-buffer
+        (mapc (lambda (f) (funcall f info)) (plist-get info :post))
+        (run-hook-with-args
+         'gptel-post-response-functions
+         (marker-position start-marker) (marker-position tracking-marker))))))
 
 (defun gptel--handle-error (fsm)
   "Check for errors in request state FSM.
@@ -1187,16 +1223,12 @@ Perform UI updates and run post-response hooks."
                  (string-trim (gptel--to-string error-msg)))))
     (if-let* ((gptel-window (get-buffer-window gptel-buffer 'visible)))
         (with-selected-window gptel-window
-          (mapc (lambda (f) (funcall f (marker-position start-marker)
-                                (marker-position tracking-marker)))
-                (plist-get info :post))
+          (mapc (lambda (f) (funcall f info)) (plist-get info :post))
           (run-hook-with-args
            'gptel-post-response-functions
            (marker-position start-marker) (marker-position tracking-marker)))
       (with-current-buffer gptel-buffer
-        (mapc (lambda (f) (funcall f (marker-position start-marker)
-                              (marker-position tracking-marker)))
-              (plist-get info :post))
+        (mapc (lambda (f) (funcall f info)) (plist-get info :post))
         (run-hook-with-args
          'gptel-post-response-functions
          (marker-position start-marker) (marker-position tracking-marker))))
@@ -1214,16 +1246,12 @@ Perform UI updates and run post-response hooks."
                                    start-marker)))
     (if-let* ((gptel-window (get-buffer-window gptel-buffer 'visible)))
         (with-selected-window gptel-window
-          (mapc (lambda (f) (funcall f (marker-position start-marker)
-                                (marker-position tracking-marker)))
-                (plist-get info :post))
+          (mapc (lambda (f) (funcall f info)) (plist-get info :post))
           (run-hook-with-args
            'gptel-post-response-functions
            (marker-position start-marker) (marker-position tracking-marker)))
       (with-current-buffer gptel-buffer
-        (mapc (lambda (f) (funcall f (marker-position start-marker)
-                              (marker-position tracking-marker)))
-              (plist-get info :post))
+        (mapc (lambda (f) (funcall f info)) (plist-get info :post))
         (run-hook-with-args
          'gptel-post-response-functions
          (marker-position start-marker) (marker-position tracking-marker))))

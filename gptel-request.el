@@ -193,49 +193,6 @@ filter LLM response text, either use `gptel-request' with a
 custom callback, or use `gptel-post-response-functions'."
  "0.9.7")
 
-(defcustom gptel-pre-response-hook nil
-  "Hook run before inserting the LLM response into the current buffer.
-
-This hook is called in the buffer where the LLM response will be
-inserted.
-
-Note: this hook only runs if the request succeeds."
-  :type 'hook)
-
-(define-obsolete-variable-alias
-  'gptel-post-response-hook 'gptel-post-response-functions
-  "0.6.0"
-  "Post-response functions are now called with two arguments: the
-start and end buffer positions of the response.")
-
-(defcustom gptel-post-response-functions nil
-  "Abnormal hook run after inserting the LLM response into the current buffer.
-
-This hook is called in the buffer to which the LLM response is
-sent, and after the full response has been inserted.  Each
-function is called with two arguments: the response beginning and
-end positions.
-
-Note: this hook runs even if the request fails.  In this case the
-response beginning and end positions are both the cursor position
-at the time of the request."
-  :type 'hook)
-
-;; (defcustom gptel-pre-stream-insert-hook nil
-;;   "Hook run before each insertion of the LLM's streaming response.
-
-;; This hook is called in the buffer from which the prompt was sent
-;; to the LLM, immediately before text insertion."
-;;   :group 'gptel
-;;   :type 'hook)
-
-(defcustom gptel-post-stream-hook nil
-  "Hook run after each insertion of the LLM's streaming response.
-
-This hook is called in the buffer from which the prompt was sent
-to the LLM, and after a text insertion."
-  :type 'hook)
-
 ;; TODO: Handle `prog-mode' using the `comment-start' variable
 (defcustom gptel-prompt-prefix-alist
   '((markdown-mode . "### ")
@@ -1616,7 +1573,10 @@ considered a success and acts as a default.")
 
 (defvar gptel-request--handlers
   `((WAIT ,#'gptel--handle-wait)
-    (TOOL ,#'gptel--handle-tool-use))
+    (TOOL ,#'gptel--handle-tool-use)
+    (DONE ,#'gptel--handle-post)
+    (ERRS ,#'gptel--handle-post)
+    (ABRT ,#'gptel--handle-post))
   "Alist specifying handlers for gptel's default state transitions.
 
 Each entry is a list whose car is a request state (a symbol) and
@@ -1775,6 +1735,12 @@ MACHINE is an instance of `gptel-fsm'"
           (plist-put info :tool-pending t)
           (funcall (plist-get info :callback)
                    (cons 'tool-call pending-calls) info))))))
+
+(defun gptel--handle-post (fsm)
+  "Run cleanup for `gptel-request' with FSM."
+  (when-let* ((info (gptel-fsm-info fsm))
+              (post (plist-get info :post)))
+    (mapc (lambda (f) (funcall f info)) post)))
 
 ;;;; State machine predicates
 ;; Predicates used to find the next state to transition to, see
@@ -2551,17 +2517,14 @@ INFO contains the request data, TOKEN is a unique identifier."
      (list (format "-w(%s . %%{size_header})" token))
      (if (length< data-json gptel-curl-file-size-threshold)
          (list (format "-d%s" data-json))
-       (letrec
-           ((write-region-inhibit-fsync t)
-            (file-name-handler-alist nil)
-            (temp-filename (make-temp-file "gptel-curl-data" nil ".json" data-json))
-            (cleanup-fn (lambda (&rest _)
-                          (when (file-exists-p temp-filename)
-                            (delete-file temp-filename)
-                            (remove-hook 'gptel-post-response-functions cleanup-fn)))))
-         (add-hook 'gptel-post-response-functions cleanup-fn)
-         (list "--data-binary"
-               (format "@%s" temp-filename))))
+       (let* ((write-region-inhibit-fsync t)
+              (file-name-handler-alist nil)
+              (inhibit-message t)
+              (temp-filename (make-temp-file "gptel-curl-data" nil ".json" data-json))
+              (cleanup-fn (lambda (&rest _) (when (file-exists-p temp-filename)
+                                         (delete-file temp-filename)))))
+         (plist-put info :post (cons cleanup-fn (plist-get info :post)))
+         (list "--data-binary" (format "@%s" temp-filename))))
      (when (not (string-empty-p gptel-proxy))
        (list "--proxy" gptel-proxy
              "--proxy-negotiate"
