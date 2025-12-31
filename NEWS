@@ -19,7 +19,7 @@
 ** New models and backends
 
 - GitHub Copilot backend: Add support for =gpt-5.2=, =gpt-41-copilot=,
-  =clause-opus-4.5= and =gemini-3-pro-preview=
+  =claude-opus-4.5=, =gemini-3-pro-preview= and =gemini-3-flash-preview=
 
 - Add support for =gemini-3-pro-preview=, =gemini-3-flash-preview=.
 
@@ -37,6 +37,10 @@
   now omits tool call results, as these tend to be very noisy.  Kill
   ring redirection now correctly captures the full response from the
   LLM, including pre- and post-tool-call text.
+
+- =gptel-rewrite= now supports tool calling.  If =gptel-tools= is
+  non-nil the LLM can, for instance, read files to fetch more context
+  for the rewrite action.
 
 ** Notable bug fixes
 
