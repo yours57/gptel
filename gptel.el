@@ -2252,7 +2252,7 @@ Before applying the preset, \"@foo\" is removed from the prompt and
 point is placed at its position."
   (when gptel--known-presets
     (text-property-search-backward 'gptel nil t)
-    (while (re-search-forward "@\\([^[:blank:]]+\\)\\_>" nil t)
+    (while (re-search-forward "@\\([^[:space:]]+\\)\\_>" nil t)
       ;; The following convoluted check is because re-search is much faster if
       ;; the search pattern begins with a non-whitespace char.
       (when (or (= (match-beginning 0) (point-min))
@@ -2277,7 +2277,7 @@ point is placed at its position."
   "Font-lock function for preset indicators in chat buffers.
 
 Return preset fontification info for text up to END."
-  (and (re-search-forward "@\\([^[:blank:]]+\\)\\_>" end t)
+  (and (re-search-forward "@\\([^[:space:]]+\\)\\_>" end t)
        (or (= (match-beginning 0) (point-min))
            (memq (char-syntax (char-before (match-beginning 0))) '(32 62)))
        (not (plist-get (text-properties-at (match-beginning 1)) 'gptel))))
