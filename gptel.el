@@ -571,19 +571,6 @@ Link failed to validate, see `gptel-markdown-validate-link' or `gptel-org-valida
   "Check if gptel response at position PT has variants."
   (get-char-property (or pt (point)) 'gptel-history))
 
-(defvar gptel--mode-description-alist
-  '((js2-mode      . "Javascript")
-    (sh-mode       . "Shell")
-    (enh-ruby-mode . "Ruby")
-    (yaml-mode     . "Yaml")
-    (yaml-ts-mode  . "Yaml")
-    (rustic-mode   . "Rust")
-    (tuareg-mode   . "OCaml"))
-  "Mapping from unconventionally named major modes to languages.
-
-This is used when generating system prompts for rewriting and
-when including context from these major modes.")
-
 
 ;;; Saving and restoring state
 

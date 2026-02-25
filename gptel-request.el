@@ -787,6 +787,19 @@ binary-encoded.")
   "\\(?:\\(?1:!\\)?\\(?2:\\[\\)\\(?3:\\^?\\(?:\\\\\\]\\|[^]]\\)*\\|\\)\\(?4:\\]\\)\\(?5:(\\)\\s-*\\(?6:[^)]*?\\)\\(?:\\s-+\\(?7:\"[^\"]*\"\\)\\)?\\s-*\\(?8:)\\)\\|\\(<\\)\\([a-z][a-z0-9.+-]\\{1,31\\}:[^]	\n<>,;()]+\\)\\(>\\)\\)"
   "Link regex for `gptel-mode' in Markdown mode.")
 
+(defvar gptel--mode-description-alist
+  '((js2-mode      . "Javascript")
+    (sh-mode       . "Shell")
+    (enh-ruby-mode . "Ruby")
+    (yaml-mode     . "Yaml")
+    (yaml-ts-mode  . "Yaml")
+    (rustic-mode   . "Rust")
+    (tuareg-mode   . "OCaml"))
+  "Mapping from unconventionally named major modes to languages.
+
+This is used when generating system prompts for rewriting and
+when including context from these major modes.")
+
 
 ;;; Utility functions
 
