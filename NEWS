@@ -1,5 +1,24 @@
 # -*- mode: org; -*-
 
+* 0.9.9.5-pre
+
+** Breaking changes
+
+- gptel's default ChatGPT backend has been removed. ~gptel-backend~ and
+  ~gptel-model~ now default to =nil=, and there are no registered
+  backends out of the box.  However gptel remains usable without
+  configuration: if ~gptel-send~ is called without a backend set, the
+  ChatGPT backend is created on the fly and used.
+
+** New models and backends
+** New features and UI changes
+
+- When using ~setopt~ or the customize interface, ~gptel-backend~ can
+  now be specified as a list instead of an opaque object.  See its
+  documentation for details.
+
+** Notable bug fixes
+
 * 0.9.9.4
 
 ** Breaking changes
@@ -696,3 +715,7 @@ model/backend configuration.
   pops up the file correctly.
 - API keys are stripped of whitespace before sending.
 - Multiple UI, backend and prompt construction bugs have been fixed.
+
+# Local Variables:
+# fill-column: 72
+# End:

@@ -322,9 +322,181 @@ the same as t."
           (repeat symbol))
   :group 'gptel)
 
-(defcustom gptel-model 'gpt-4o-mini
+(defvar gptel--known-backends nil
+  "Alist of LLM backends known to gptel.
+
+This is an alist mapping user-provided names to backend structs,
+see `gptel-backend'.
+
+You can have more than one backend pointing to the same resource
+with differing settings.")
+
+(defvar gptel--openai nil)
+(make-obsolete-variable 'gptel--openai "No longer used" "v0.9.9.5")
+
+(defcustom gptel-backend nil
+  "LLM backend to use.
+
+This is the default \"backend\" used by gptel, an object specifying
+connection, authentication and model information required to send LLM
+requests.
+
+There are two ways to set `gptel-backend':
+
+1. with `setopt' or the Customize interface,
+2. and via constructors (such as `gptel-make-openai') in Elisp code.
+
+When using `setopt' or the customize interface, a backend may be
+specified in a list such as
+
+  (BACKEND-TYPE NAME . PLIST)
+
+where:
+
+BACKEND-TYPE is one of `gptel-openai' (all OpenAI-compatible
+services), `gptel-anthropic', `gptel-gemini', `gptel-ollama',
+`gptel-kagi', `gptel--gh' (GitHub Copilot), `gptel-bedrock' (AWS
+Bedrock), `gptel-perplexity', `gptel-deepseek' or `gptel-privategpt'.
+
+NAME is a string, any backend name of your choosing.
+
+PLIST is an optional plist specifying connection and authentication
+information, with keys
+
+:protocol       - \"http\" or \"https\"
+:host           - Host, such as \"api.openai.com\" or \"localhost:1616\"
+:endpoint       - connection endpoint, such as \"/v1/chat/completions\"
+:header         - HTTP header to inclue with the request, a string
+                  or function
+:key            - API key, if required for authentication
+                  String, symbol or function, see `gptel-api-key'
+:models         - List of supported models (symbols, see
+                  `gptel--openai-models' for an example)
+:stream         - Whether to stream responses, boolean
+:request-params - Additional parameters to send with backend queries, as
+                  a plist.  This plist is converted to JSON when sending.
+                  This is meant for request parameters that gptel does not
+                  provide user options for.
+:curl-args      - list of strings representing additional Curl arguments (if
+                  `gptel-use-curl' is set)
+
+When using the OpenAI, Anthropic, Gemini, Kagi, Github Copilot,
+Perplexity or Deepseek backends, all plist keys are optional.  For other
+services, specifying some fields may be required.  Examples:
+
+  (setopt gptel-backend \\='(gptel-openai \"OpenAI\"
+                          :key gptel-api-key-from-auth-source
+                          :stream t))
+
+  (setopt gptel-backend \\='(gptel-anthropic \"Claude\" :key \"sk-...\"))
+
+  (setopt gptel-backend \\='(gptel-ollama \"Ollama\"
+                          :host \"localhost:11434\"
+                          :models \\='(qwen3:4b llama3.1:8b)
+                          :stream t))
+
+This list of keys is non-exhaustive.  Some backends (such as
+`gptel-bedrock') recognize or require additional keys.  To see what
+other keys are available, check the corresponding constructor (such as
+`gptel-make-bedrock').
+
+When not using `setopt', backends for LLM providers (local or remote)
+may be constructed and registered using one of the available backend
+constructor functions:
+
+- `gptel-make-openai'
+- `gptel-make-anthropic'
+- `gptel-make-gemini'
+- `gptel-make-ollama'
+- `gptel-make-azure'
+- `gptel-make-gpt4all'
+- `gptel-make-kagi'
+- `gptel-make-privategpt'
+- `gptel-make-perplexity'
+- `gptel-make-deepseek'
+- `gptel-make-xai'
+- `gptel-make-gh-copilot'
+- `gptel-make-bedrock'
+
+In addition, `gptel-backend' can be assigned to them.  Examples:
+
+  (setq gptel-backend (gptel-make-openai \"llamacpp\"
+                        :host \"localhost:8080\"
+                        :protocol \"http\"
+                        :models \\='(gpt-oss-120b glm-4.7-flash)))
+
+  (setq gptel-backend (gptel-make-gemini \"Gemini\"
+                        :key gptel-api-key :stream t))
+
+  (setq gptel-backend (gptel-make-anthropic \"Claude-think\"
+                        :key gptel-api-key
+                        :request-params
+                        \\='(:thinking (:type \"enabled\" :budget_tokens 1024)
+                          :max_tokens 2048)))
+
+See their documentation for more information and the package README for
+examples.  Once registered, backends may be retrieved using
+`gptel-get-backend' or switched to interactively from gptel's menu (see
+`gptel-menu')."
+  :safe #'always
+  :type
+  (let ((types '( choice :tag "Type"
+                  (const :tag "OpenAI compatible" gptel-openai)
+                  (const gptel-anthropic)
+                  (const gptel-gemini)
+                  (const gptel-ollama)
+                  (const gptel-kagi)
+                  (const :tag "GitHub Copilot" gptel-gh)
+                  (const gptel-bedrock)
+                  (const gptel-perplexity)
+                  (const gptel-deepseek)
+                  (const gptel-privategpt))))
+    `(choice
+      (const :tag "No backend" nil)
+      (cons :tag "(BACKEND-TYPE NAME . PLIST)" ;accommodate (gptel-openai "chatgpt" . plist)
+            ,types (cons string
+                         (plist :value-type (choice string symbol function))))
+      (cons :tag "(BACKEND-TYPE . PLIST)" ;accommodate (gptel-openai :name "chatgpt" . plist)
+            ,types (plist :value-type (choice string symbol function)))))
+  :get
+  (lambda (sym)
+    (when-let* ((backend (default-toplevel-value sym))
+                (type (type-of backend))
+                (plist (list :protocol (gptel-backend-protocol backend)
+                             :host (gptel-backend-host backend)
+                             :endpoint (gptel-backend-endpoint backend)
+                             :header (gptel-backend-header backend)
+                             :key (gptel-backend-key backend)
+                             :models (gptel-backend-models backend)
+                             :stream (gptel-backend-stream backend)
+                             :curl-args (gptel-backend-curl-args backend)
+                             :request-params (gptel-backend-request-params backend))))
+      (apply #'list type (gptel-backend-name backend)
+             (cl-loop for (k v) on plist by #'cddr
+                      if (and (readablep v) (not (null v)))
+                      collect k and collect v))))
+  :set
+  (lambda (sym val)
+    (cond
+     ((null val) (set-default-toplevel-value sym val))
+     ((listp val)
+      (let* ((name (if (stringp (cadr val)) ;explicit and implicit :name specification
+                       (cadr val) (plist-get (cdr val) :name)))
+             (args (if name (cddr val) (cdr val)))
+             type)
+        (cl-remf args :name)
+        (if (memq (car val) '(gptel-gh gptel--gh))
+            (setq type 'gptel-gh-copilot)
+          (setq type (car val)))
+        (set-default-toplevel-value
+         sym (apply (intern (concat "gptel-make-"
+                                    (substring (symbol-name type) 6)))
+                    name args))))
+     ((gptel-backend-p val) (set-default-toplevel-value sym val)))))
+
+(defcustom gptel-model nil
   (concat
-   "Model for chat.
+   "Model for gptel queries.
 
 The name of the model, as a symbol.  This is the name as expected
 by the LLM provider's API.
@@ -334,40 +506,12 @@ To set the model for a chat session interactively call
   :safe #'always
   :type `(choice
 	  (symbol :tag "Specify model name")
-	  ,@(mapcar (lambda (model)
-		      (list 'const :tag (symbol-name (car model))
-			    (car model)))
-		    gptel--openai-models)))
-
-(defvar gptel--openai
-  (gptel-make-openai
-      "ChatGPT"
-    :key 'gptel-api-key
-    :stream t
-    :models gptel--openai-models))
-
-(defcustom gptel-backend gptel--openai
-  "LLM backend to use.
-
-This is the default \"backend\", an object of type
-`gptel-backend' containing connection, authentication and model
-information.
-
-A backend for ChatGPT is pre-defined by gptel.  Backends for
-other LLM providers (local or remote) may be constructed using
-one of the available backend creation functions:
-- `gptel-make-openai'
-- `gptel-make-azure'
-- `gptel-make-ollama'
-- `gptel-make-gpt4all'
-- `gptel-make-gemini'
-See their documentation for more information and the package
-README for examples."
-  :safe #'always
-  :type `(choice
-          (const :tag "ChatGPT" ,gptel--openai)
-          (restricted-sexp :match-alternatives (gptel-backend-p 'nil)
-			   :tag "Other backend")))
+	  ,@(cl-loop
+             for (_name . backend) in gptel--known-backends
+             append (mapcar
+                     (lambda (model) (list 'const :tag (symbol-name model)
+			              model))
+                     (gptel-backend-models backend)))))
 
 (defvar gptel-expert-commands nil
   "Whether experimental gptel options should be enabled.
