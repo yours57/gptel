@@ -22,16 +22,17 @@
 ;; This file adds support for the Gemini API to gptel
 
 ;;; Code:
-(require 'gptel)
 (require 'cl-generic)
 (require 'map)
-(eval-when-compile (require 'cl-lib))
+(require 'cl-lib)
+(eval-and-compile (require 'gptel-request))
 
 (declare-function prop-match-value "text-property-search")
 (declare-function text-property-search-backward "text-property-search")
 (declare-function json-read "json")
 (declare-function gptel-context--wrap "gptel-context")
 (declare-function gptel-context--collect-media "gptel-context")
+
 (defvar json-object-type)
 
 ;;; Gemini

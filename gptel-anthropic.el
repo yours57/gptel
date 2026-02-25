@@ -25,7 +25,7 @@
 (require 'cl-generic)
 (require 'cl-lib)
 (require 'map)
-(require 'gptel)
+(eval-and-compile (require 'gptel-request))
 
 (defvar json-object-type)
 

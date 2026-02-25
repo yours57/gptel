@@ -219,7 +219,7 @@
 (require 'map)
 (require 'text-property-search)
 (require 'cl-generic)
-(require 'gptel-request)
+(eval-and-compile (require 'gptel-request))
 
 
 ;;; User options
