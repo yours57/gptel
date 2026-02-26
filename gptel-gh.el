@@ -19,10 +19,11 @@
 
 ;;; Code:
 
-(eval-when-compile
-  (require 'cl-lib))
+(require 'cl-lib)
 (require 'map)
-(require 'gptel)
+(eval-and-compile
+  (require 'gptel-request)
+  (require 'gptel-openai))
 (require 'browse-url)
 
 ;;; Github Copilot

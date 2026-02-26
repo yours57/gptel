@@ -27,8 +27,8 @@
 ;;; Code:
 (require 'cl-lib)
 (require 'map)
-(require 'gptel)
 (require 'mail-parse)
+(eval-and-compile (require 'gptel-request))
 
 (declare-function gptel-context--collect-media "gptel-context")
 (declare-function gptel-context--wrap "gptel-context")
