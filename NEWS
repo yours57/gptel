@@ -19,6 +19,11 @@
 
 ** Notable bug fixes
 
+- ~gptel-backend~ can now be set from customize buffers.  These are
+  produced by, for example, =M-x customize-group ⮐ gptel=.  Previously
+  ~gptel-backend~ was displayed in a read-only way, and could even break
+  the display of the customize buffer depending on its value.
+
 * 0.9.9.4
 
 ** Breaking changes
