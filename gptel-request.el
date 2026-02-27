@@ -452,7 +452,8 @@ examples.  Once registered, backends may be retrieved using
                   (const gptel-deepseek)
                   (const gptel-privategpt))))
     `(choice
-      (const :tag "No backend" nil)
+      (restricted-sexp :match-alternatives (gptel-backend-p 'nil)
+                       :tag "No backend")
       (cons :tag "(BACKEND-TYPE NAME . PLIST)" ;accommodate (gptel-openai "chatgpt" . plist)
             ,types (cons string
                          (plist :value-type (choice string symbol function))))
