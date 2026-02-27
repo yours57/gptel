@@ -828,19 +828,22 @@ Search between BEG and END."
                                 toggle-tools)
                      'mouse-face 'highlight
                      'help-echo "Select tools"))))
-      (concat
-       (propertize
-        " " 'display
-        `(space :align-to (- right
-                             ,(+ 5 (length model) (length system)
-                                 (length track-media) (length context) (length tools)))))
-       tools (and track-media " ") track-media (and context " ") context " " system " "
-       (propertize
-        (buttonize (concat "[" model "]")
-                   (lambda (&rest _) (gptel-menu)))
-        'mouse-face 'highlight
-        'help-echo "Model in use"))))
-  "Information segment for the header-line in gptel-mode.")
+      (let ((rhs (concat
+                  tools (and track-media " ") track-media
+                  (and context " ") context " " system " "
+                  (propertize
+                   (buttonize (concat "[" model "]")
+                              (lambda (&rest _) (gptel-menu)))
+                   'mouse-face 'highlight
+                   'help-echo "Model in use"))))
+        (concat
+         (propertize
+          " " 'display
+          (if (fboundp 'string-pixel-width)
+              `(space :align-to (- right (,(string-pixel-width rhs))))
+            `(space :align-to (- right ,(+ 5 (string-width rhs))))))
+         rhs))))
+  "Information segment for the header-line in `gptel-mode'.")
 
 (defun gptel-use-header-line ()
   "Set up the header-line for a gptel buffer.
