@@ -42,22 +42,6 @@
      :input-cost 0
      :output-cost 0
      :cutoff-date "2024-05")
-    (gpt-41-copilot
-     :description "Flagship model for complex tasks"
-     :capabilities (media tool-use json url)
-     :mime-types ("image/jpeg" "image/png" "image/gif" "image/webp")
-     :context-window 200
-     :input-cost 0
-     :output-cost 0
-     :cutoff-date "2024-05")
-    (gpt-5
-     :description "Flagship model for coding, reasoning, and agentic tasks across domains"
-     :capabilities (media tool-use json url)
-     :mime-types ("image/jpeg" "image/png" "image/gif" "image/webp")
-     :context-window 264
-     :input-cost 1
-     :output-cost 1
-     :cutoff-date "2024-09")
     (gpt-5.1-codex-max
      :description "Flagship model for coding, reasoning, and agentic tasks across domains"
      :capabilities (media tool-use json url)
@@ -122,14 +106,6 @@
      :input-cost 0.33
      :output-cost 0.33
      :cutoff-date "2025-02")
-    (claude-opus-41
-     :description "Most capable model for complex reasoning and advanced coding"
-     :capabilities (media tool-use cache)
-     :mime-types ("image/jpeg" "image/png" "image/gif" "image/webp" "application/pdf")
-     :context-window 80
-     :input-cost 10
-     :output-cost 10
-     :cutoff-date "2025-03")
     (claude-opus-4.5
      :description "Most capable model for complex reasoning and advanced coding"
      :capabilities (media tool-use cache)
