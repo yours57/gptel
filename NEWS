@@ -11,6 +11,11 @@
   ChatGPT backend is created on the fly and used.
 
 ** New models and backends
+
+- xAI backend: Add support for =grok-4-1-fast-reasoning=,
+  =grok-4-1-fast-non-reasoning=, =grok-4-fast-reasoning=, and
+  =grok-4-fast-non-reasoning=.
+
 ** New features and UI changes
 
 - When using ~setopt~ or the customize interface, ~gptel-backend~ can
@@ -459,7 +464,7 @@
   ~gptel-mcp-disconnect~.  You can use these to start MCP servers
   selectively and add tools to gptel.  These commands are also
   available from gptel's tools menu.
-  
+
   These commands are currently not autoloaded by gptel.  To access
   them, require the ~gptel-integrations~ feature.
 
@@ -501,7 +506,7 @@
   path.
 
 - The current kill can be added to gptel's context.  To enable this,
-  turn on ~gptel-expert-commands~ and use gptel's transient menu. 
+  turn on ~gptel-expert-commands~ and use gptel's transient menu.
 
 - The tools menu (~gptel-tools~) has been redesigned.  It now displays
   tool categories and associated tools in two columns, and it should
