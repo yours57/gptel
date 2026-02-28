@@ -392,7 +392,7 @@ services, specifying some fields may be required.  Examples:
 
   (setopt gptel-backend \\='(gptel-ollama \"Ollama\"
                           :host \"localhost:11434\"
-                          :models \\='(qwen3:4b llama3.1:8b)
+                          :models (qwen3:4b llama3.1:8b)
                           :stream t))
 
 This list of keys is non-exhaustive.  Some backends (such as
@@ -452,12 +452,15 @@ examples.  Once registered, backends may be retrieved using
                   (const gptel-deepseek)
                   (const gptel-privategpt))))
     `(choice
-      (const :tag "No backend" nil)
+      (restricted-sexp :match-alternatives (gptel-backend-p 'nil)
+                       :tag "No backend")
       (cons :tag "(BACKEND-TYPE NAME . PLIST)" ;accommodate (gptel-openai "chatgpt" . plist)
             ,types (cons string
-                         (plist :value-type (choice string symbol function))))
+                         (plist :value-type (choice string symbol function
+                                                    (repeat symbol)))))
       (cons :tag "(BACKEND-TYPE . PLIST)" ;accommodate (gptel-openai :name "chatgpt" . plist)
-            ,types (plist :value-type (choice string symbol function)))))
+            ,types (plist :value-type (choice string symbol function
+                                              (repeat symbol))))))
   :get
   (lambda (sym)
     (when-let* ((backend (default-toplevel-value sym))
