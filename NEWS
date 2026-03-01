@@ -10,11 +10,18 @@
   configuration: if ~gptel-send~ is called without a backend set, the
   ChatGPT backend is created on the fly and used.
 
+- The models =gpt-41-copilot=, =gpt-5= and =claude-opus-41= have been
+  removed from the default list of GitHub Copilot models.  These models
+  are no longer available in the GitHub Copilot API.
+
 ** New models and backends
 
 - xAI backend: Add support for =grok-4-1-fast-reasoning=,
   =grok-4-1-fast-non-reasoning=, =grok-4-fast-reasoning=, and
   =grok-4-fast-non-reasoning=.
+
+- - GitHub Copilot backend: Add support for =gpt-5.1-codex-,
+  =gpt-5.1-codex-mini, =claude-sonnet-4.6= and =gemini-3.1-pro-preview=.
 
 ** New features and UI changes
 
