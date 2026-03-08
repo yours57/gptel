@@ -1614,22 +1614,54 @@ send to the LLM.")
 
 ;; FIXME(fsm) unify this with `gptel--inject-media', which is a mess
 (cl-defgeneric gptel--inject-prompt
-    (_backend data new-prompt &optional _position)
-  "Append NEW-PROMPT to existing prompts in query DATA.
+    (_backend data new-prompt &optional position)
+  "Inject NEW-PROMPT into existing prompts in query DATA.
 
 NEW-PROMPT can be a single message or a list of messages.
 
-Not implemented: if POSITION is
-- a non-negative number, insert it at that position in PROMPTS.
-- a negative number, insert it there counting from the end.
+If POSITION is
+- nil, append NEW-PROMPT at the end of DATA
+- a non-negative integer, insert it at that position in DATA.
+- a negative integer, insert it there counting from the end.
+
+- Not implemented: a list of accessors, inject it at that position.
 
 This generic implementation handles the Anthropic,
 OpenAI-compatible and Ollama message formats."
-  ;; ;TODO(fsm): implement _POSITION
   (when (keywordp (car-safe new-prompt)) ;Is new-prompt one or many?
     (setq new-prompt (list new-prompt)))
   (let ((prompts (plist-get data :messages)))
-    (plist-put data :messages (vconcat prompts new-prompt))))
+    (pcase position
+      ('nil (plist-put data :messages (vconcat prompts new-prompt)))
+      ((pred integerp)
+       (when (< position 0) (setq position (+ (length prompts) position)))
+       (plist-put data :messages (vconcat (substring prompts 0 position)
+                                          new-prompt
+                                          (substring prompts position)))))))
+
+(cl-defgeneric gptel--inject-tool-call (backend _data _tool-call new-call)
+  "Replace TOOL-CALL in query DATA with NEW-CALL.
+
+DATA is the request payload containing the array of user and assistant
+messages, typically available as (plist-get INFO :data).  TOOL-CALL is
+the call plist as recorded by gptel's response parser(s).  NEW-CALL is
+the replacement plist containing the new tool name and arguments, in the
+form
+
+  (:name \"newName\" :args (:arg1 \"newArg\" :arg2 ...))
+
+:name and :args are both optional.
+
+If NEW-CALL is nil, the tool call is removed from DATA and thus the turn
+history.
+
+BACKEND is the `gptel-backend'."
+  (display-warning
+   '(gptel tool-call)
+   (format "Editing tool call arguments is not implemented for %s.\
+  Ignoring new arguments %s"
+           (type-of backend)
+           (truncate-string-to-width (prin1-to-string new-call) 50 nil nil t))))
 
 
 ;;; State machine for driving requests
@@ -1640,7 +1672,8 @@ OpenAI-compatible and Ollama message formats."
              (,#'gptel--tool-use-p    . TOOL)
              (t                       . DONE)))
     (TOOL . ((,#'gptel--error-p       . ERRS)
-             (,#'gptel--tool-result-p . WAIT)
+             (t                       . TRET)))
+    (TRET . ((,#'gptel--tool-result-p . WAIT)
              (t                       . DONE))))
   "Alist specifying gptel's default state transition table for requests.
 
@@ -1655,6 +1688,7 @@ considered a success and acts as a default.")
 (defvar gptel-request--handlers
   `((WAIT ,#'gptel--handle-wait)
     (TOOL ,#'gptel--handle-tool-use)
+    (TRET ,#'gptel--handle-tool-result)
     (DONE ,#'gptel--handle-post)
     (ERRS ,#'gptel--handle-post)
     (ABRT ,#'gptel--handle-post))
@@ -1737,7 +1771,7 @@ MACHINE is an instance of `gptel-fsm'"
   ;; a second network request: gptel tests for the presence of these flags to
   ;; handle state transitions.  (NOTE: Don't add :token to this.)
   (let ((info (gptel-fsm-info fsm)))
-    (dolist (key '(:tool-success :tool-use :error :http-status :reasoning))
+    (dolist (key '(:tool-result :tool-use :error :http-status :reasoning))
       (when (plist-get info key)
         (plist-put info key nil))))
   (funcall
@@ -1747,41 +1781,49 @@ MACHINE is an instance of `gptel-fsm'"
    fsm)
   (run-hooks 'gptel-post-request-hook))
 
+(defun gptel--process-tool-call (fsm tool-spec tool-call result)
+  "Add tool RESULT to a TOOL-CALL and transition FSM if required.
+
+TOOL-CALL is a plist with the tool :name, :args and other metadata.
+TOOL-SPEC is the `gptel-tool' object, and FSM is the request state.
+
+If all pending tool calls in the current request have finished, it
+injects the results into the prompt data and transitions the FSM."
+  (let* ((info (gptel-fsm-info fsm))
+         (tool-result-alist (plist-get info :tool-result))
+         ;; MAYBE(tool-hooks): Use plist-member for valid nil :result?
+         (remaining (cl-loop for call in (plist-get info :tool-use)
+                             count (not (plist-get call :result)))))
+    (let ((result (gptel--to-string result)))
+      ;; FIXME(tool-hooks): If a hook has changed the tool that was called
+      ;; tool-spec needs to be updated.
+      (push (list tool-spec (plist-get tool-call :args) result)
+            tool-result-alist)
+      (plist-put info :tool-result tool-result-alist) ;for the callback
+      ;; NOTE: tool-call is a member of (plist-get info :tool-use), so :tool-use
+      ;; is modified by side effect.
+      ;; FIXME: Make the implicit addition to :tool-use explicit
+      (plist-put tool-call :result result)) ;for the LLM
+    ;; All tools have run
+    (when (<= (cl-decf remaining) 0) (gptel--fsm-transition fsm))))
+
 (defun gptel--handle-tool-use (fsm)
   "Run tool calls captured in FSM, and advance the state machine with the results."
   (when-let* ((info (gptel-fsm-info fsm))
               (backend (plist-get info :backend))
               ;; This function might run many times, so only act on the remaining tool calls.
               (tool-use (cl-remove-if (lambda (tc) (plist-get tc :result))
-                                      (plist-get info :tool-use)))
-              (ntools (length tool-use))
-              (tool-idx 0))
+                                      (plist-get info :tool-use))))
     (with-current-buffer (plist-get info :buffer)
-      (let ((result-alist) (pending-calls))
+      (let ((pending-calls))
         (mapc                           ; Construct function calls
          (lambda (tool-call)
            (letrec ((args (plist-get tool-call :args))
                     (name (plist-get tool-call :name))
-                    (arg-values nil)
-                    (tool-spec
-                     (cl-find-if
-                      (lambda (ts) (equal (gptel-tool-name ts) name))
-                      (plist-get info :tools)))
-                    (process-tool-result
-                     (lambda (result)
-                       (plist-put info :tool-success t)
-                       (let ((result (gptel--to-string result)))
-                         (plist-put tool-call :result result)
-                         (push (list tool-spec args result) result-alist))
-                       (cl-incf tool-idx)
-                       (when (>= tool-idx ntools) ; All tools have run
-                         (gptel--inject-prompt
-                          backend (plist-get info :data)
-                          (gptel--parse-tool-results
-                           backend (plist-get info :tool-use)))
-                         (funcall (plist-get info :callback)
-                                  (cons 'tool-result result-alist) info)
-                         (gptel--fsm-transition fsm)))))
+                    (tool-spec (cl-find-if (lambda (ts) (equal (gptel-tool-name ts) name))
+                                           (plist-get info :tools)))
+                    (process-tool-result (apply-partially #'gptel--process-tool-call
+                                                          fsm tool-spec tool-call)))
              (if (null tool-spec)
                  (if (equal name gptel--ersatz-json-tool) ;Could be a JSON response
                      ;; Handle structured JSON output supplied as tool call
@@ -1789,33 +1831,56 @@ MACHINE is an instance of `gptel-fsm'"
                               (gptel--json-encode (plist-get tool-call :args))
                               info)
                    (message "Unknown tool called by model: %s" name))
-               (setq arg-values
-                     (mapcar
-                      (lambda (arg)
-                        (let ((key (intern (concat ":" (plist-get arg :name)))))
-                          (plist-get args key)))
-                      (gptel-tool-args tool-spec)))
-               ;; Check if tool requires confirmation
-               (if (and gptel-confirm-tool-calls
+               (let ((confirm))         ;Check if tool requires confirmation
+                 (cond      ;:confirm in tool-call (from hooks) takes precedence
+                  ((and-let* ((call-confirm (plist-member tool-call :confirm)))
+                     (setq confirm (cadr call-confirm))))
+                  ((and gptel-confirm-tool-calls ;global and tool-specific setting
                         (or (eq gptel-confirm-tool-calls t) ;always confirm, or
                             (and-let* ((confirm (gptel-tool-confirm tool-spec)))
-                              (or (not (functionp confirm)) (apply confirm arg-values)))))
-                   (push (list tool-spec arg-values process-tool-result)
-                         pending-calls)
-                 ;; If not, run the tool
-                 (if (gptel-tool-async tool-spec)
-                     (apply (gptel-tool-function tool-spec)
-                            process-tool-result arg-values)
-                   (let ((result
-                          (condition-case errdata
-                              (apply (gptel-tool-function tool-spec) arg-values)
-                            (error (mapconcat #'gptel--to-string errdata " ")))))
-                     (funcall process-tool-result result)))))))
+                              (or (not (functionp confirm))
+                                  (apply confirm (gptel--map-tool-args tool-spec args))))))
+                   (setq confirm t)))
+                 (if confirm  ;To send to callback for confirmation
+                     (push (list tool-spec args process-tool-result) pending-calls)
+                   (let ((arg-values (gptel--map-tool-args tool-spec args)))
+                     (if (gptel-tool-async tool-spec) ;If not, run the tool
+                         (apply (gptel-tool-function tool-spec)
+                                process-tool-result arg-values)
+                       (let ((result (condition-case errdata
+                                         (apply (gptel-tool-function tool-spec) arg-values)
+                                       (error (mapconcat #'gptel--to-string errdata " ")))))
+                         (funcall process-tool-result result)))))))))
          tool-use)
         (when pending-calls
           (plist-put info :tool-pending t)
           (funcall (plist-get info :callback)
                    (cons 'tool-call pending-calls) info))))))
+
+(defun gptel--map-tool-args (tool-spec args)
+  "Create a tool call argument list from TOOL-SPEC and ARGS.
+
+TOOL-SPEC is a `gptel-tool' and ARGS is a plist of arguments for a tool
+call.  The argument list is suitable for supplying to the tool function."
+  (mapcar
+   (lambda (arg)
+     (let ((key (intern (concat ":" (plist-get arg :name)))))
+       (plist-get args key)))
+   (gptel-tool-args tool-spec)))
+
+(defun gptel--handle-tool-result (fsm)
+  "Handle the results of tool execution in FSM.
+
+Inject tool results into into the prompt data (for the LLM), run the
+callback (for the user), and transition the request state."
+  (let ((info (gptel-fsm-info fsm)))
+    (gptel--inject-prompt
+     (plist-get info :backend) (plist-get info :data)
+     (gptel--parse-tool-results (plist-get info :backend)
+                                (plist-get info :tool-use)))
+    (funcall (plist-get info :callback)
+             (cons 'tool-result (plist-get info :tool-result)) info))
+  (gptel--fsm-transition fsm))
 
 (defun gptel--handle-post (fsm)
   "Run cleanup for `gptel-request' with FSM."
@@ -1831,7 +1896,7 @@ MACHINE is an instance of `gptel-fsm'"
 
 (defun gptel--tool-use-p (info) (plist-get info :tool-use))
 
-(defun gptel--tool-result-p (info) (plist-get info :tool-success))
+(defun gptel--tool-result-p (info) (plist-get info :tool-result))
 
 
 ;;; Send gptel requests

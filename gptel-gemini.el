@@ -241,12 +241,58 @@ TOOLS is a list of `gptel-tool' structs, which see."
             (:name ,name :content ,result)))))
      tool-use))))
 
-(cl-defmethod gptel--inject-prompt ((_backend gptel-gemini) data new-prompt &optional _position)
-  "Append NEW-PROMPT to existing prompts in query DATA.
+(cl-defmethod gptel--inject-prompt ((_backend gptel-gemini) data new-prompt &optional position)
+  "Inject NEW-PROMPT into existing prompts in query DATA.
 
 See generic implementation for full documentation."
+  (when (keywordp (car-safe new-prompt)) ;Is new-prompt one or many?
+    (setq new-prompt (list new-prompt)))
   (let ((prompts (plist-get data :contents)))
-    (plist-put data :contents (vconcat prompts (list new-prompt)))))
+    (pcase position
+      ('nil (plist-put data :contents (vconcat prompts new-prompt)))
+      ((pred integerp)
+       (when (< position 0) (setq position (+ (length prompts) position)))
+       (plist-put data :contents (vconcat (substring prompts 0 position)
+                                          new-prompt
+                                          (substring prompts position)))))))
+
+(cl-defmethod gptel--inject-tool-call ((_backend gptel-gemini) data tool-call new-call)
+  "Replace TOOL-CALL in query DATA with NEW-CALL.
+
+BACKEND is the `gptel-backend'.  See the generic function documentation
+for details.  This implementation handles the Gemini API."
+  ;; FIXME: We currently assume that the tool call being modified is in the last
+  ;; position in the messages array.
+  (if-let* ((messages (plist-get data :contents))
+            (entry (aref messages (1- (length messages))))
+            (parts (plist-get entry :parts))
+            (indexed-call
+             (cl-loop with name = (plist-get tool-call :name)
+                      with old-args = (plist-get tool-call :args)
+                      for chunk across parts
+                      for i upfrom 0
+                      if (plist-get chunk :functionCall)
+                      if (and (equal (plist-get it :name) name)
+                              (equal (plist-get it :args) old-args))
+                      return (cons i (plist-get chunk :functionCall)) end
+                      finally return nil))
+            (index (car indexed-call))
+            (call (cdr indexed-call)))
+      (if (null new-call)
+          (if (= (length parts) 1)
+              (plist-put data :contents (substring messages nil -1))
+            (plist-put entry :parts
+                       (vconcat (substring parts 0 index)
+                                (substring parts (1+ index)))))
+        (when-let* ((args (plist-get new-call :args)))
+          (plist-put call :args args))
+        (when-let* ((name (plist-get new-call :name)))
+          (plist-put call :name name)))
+    (display-warning
+     '(gptel tool-call)
+     (format "Could not inject updated tool-call arguments for tool call %s, %s"
+             (plist-get tool-call :name)
+             (truncate-string-to-width (prin1-to-string new-call) 50 nil nil t)))))
 
 (cl-defmethod gptel--parse-list ((backend gptel-gemini) prompt-list)
   (if (consp (car prompt-list))

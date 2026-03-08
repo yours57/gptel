@@ -32,12 +32,59 @@
   now be specified as a list instead of an opaque object.  See its
   documentation for details.
 
+- When using ~gptel-send~, tool calls that require confirmation can now
+  be examined in full in a dedicated inspection buffer, where they are
+  displayed as Elisp forms.
+
+  The tool name and tool call arguments can also be modified in-place
+  now.  These modifications /must/ be in-place; deleting tool calls or
+  adding new ones to the inspection buffer is not supported.
+
+- New hooks ~gptel-pre-tool-call-functions~ and
+  ~gptel-post-tool-call-functions~ run before and after each tool call,
+  respectively.  These hooks receive details of the (planned or
+  finished) tool call and provide fine-grained control over them.  These
+  hooks work with ~gptel-send~, including when invoked from gptel's
+  Transient menu or from Elisp.
+
+  ~gptel-pre-tool-call-functions~ can be used to modify tool call
+  arguments, short-circuit the call and provide the results, block the
+  tool call but continue the request with a message for the LLM, or stop
+  the request entirely.
+
+  ~gptel-post-tool-call-functions~ can be used to modify tool call
+  results, block the tool call but continue the request, or stop the
+  request entirely.
+
 ** Notable bug fixes
 
 - ~gptel-backend~ can now be set from customize buffers.  These are
   produced by, for example, =M-x customize-group ⮐ gptel=.  Previously
   ~gptel-backend~ was displayed in a read-only way, and could even break
   the display of the customize buffer depending on its value.
+
+- Breaking change to the ~gptel-request~ API: Tool call arguments are
+  passed to ~gptel-request~ callbacks as a plist, not a list.  The plist
+  keys are the function argument names as specified in the tool
+  definition.  /This does not affect ~gptel-send~ or (to my best
+  knowledge) any of the packages using gptel./
+
+  Example: The previous behavior was
+
+  : (funcall callback `(tool-call ,web-search ("emacs" 10) ,tool-cb))
+
+  where =web-search= is a ~gptel-tool~, and =callback= and =tool-cb= are
+  the ~gptel-request~ and tool callback respectively.  The new behavior
+  is:
+
+  : (funcall callback
+  :          `(tool-call ,web-search (:query "emacs" :count 10) ,tool,cb))
+
+  where =:query= and =:count= correspond to arguments =query= and
+  =count= in the definition of =web-search=.
+
+  Note that this is a bug fix. It's how the API has been documented and
+  was supposed to work in the first place.
 
 * 0.9.9.4
 
