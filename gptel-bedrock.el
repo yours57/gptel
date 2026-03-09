@@ -352,16 +352,19 @@ received."
                   (start (car block-events))
                   (deltas (cdr block-events)))
              (when-let ((tool-use (map-nested-elt start '(:payload :start :toolUse))))
-               (let ((id (plist-get tool-use :toolUseId))
-                     (name (plist-get tool-use :name))
-                     (input (gptel--json-read-string
-                             (mapconcat
-                              (lambda (delta) (map-nested-elt delta '(:payload :delta :toolUse :input)))
-                              deltas))))
+               (let* ((id (plist-get tool-use :toolUseId))
+                      (name (plist-get tool-use :name))
+                      (input-str
+                       (mapconcat (lambda (delta) (map-nested-elt
+                                              delta '(:payload :delta :toolUse :input)))
+                                  deltas))
+                      (input (unless (string-blank-p input-str)
+                               (gptel--json-read-string input-str))))
                  (push
                   (list :toolUse (list :input input :name name :toolUseId id))
                   contents)))
-             (when-let ((texts (delq nil (mapcar (lambda (d) (map-nested-elt d '(:payload :delta :text))) deltas))))
+             (when-let ((texts (delq nil (mapcar (lambda (d) (map-nested-elt d '(:payload :delta :text)))
+                                                 deltas))))
                (push (list :text (apply #'concat texts)) contents))
              ;; Currently we discard any reasoning content but this would be the spot to handle it
              ))
@@ -516,6 +519,12 @@ conversation."
 (defvar gptel-bedrock--aws-profile-cache nil
   "Cache for AWS profile credentials in the form of (PROFILE . CREDS).")
 
+(defvar gptel-bedrock-aws-cli-command (executable-find "aws")
+  "Path to the AWS CLI command.
+
+Can be customized to use a specific AWS CLI installation,
+e.g. \"/usr/local/bin/aws\".")
+
 (defun gptel-bedrock--fetch-aws-profile-credentials (profile &optional clear-cache)
   "Fetch & cache AWS credentials for PROFILE using aws-cli.
 
@@ -529,7 +538,8 @@ Non-nil CLEAR-CACHE will refresh credentials."
              (or (and (not clear-cache) (cdr cell))
                  (setf (cdr cell)
                        (with-temp-buffer
-		           (unless (zerop (apply #'call-process "aws" nil t nil "configure" "export-credentials"
+		           (unless (zerop (apply #'call-process gptel-bedrock-aws-cli-command
+                                                 nil t nil "configure" "export-credentials"
                                                  (unless (eql profile :static) (list (format "--profile=%s" profile)))))
 		             (user-error "Failed to get AWS credentials from profile"))
 		         (json-parse-string (buffer-string)))))))
