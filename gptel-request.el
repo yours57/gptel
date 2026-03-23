@@ -1671,9 +1671,9 @@ BACKEND is the `gptel-backend'."
     (TYPE . ((,#'gptel--error-p       . ERRS)
              (,#'gptel--tool-use-p    . TOOL)
              (t                       . DONE)))
-    (TOOL . ((,#'gptel--error-p       . ERRS)
-             (t                       . TRET)))
-    (TRET . ((,#'gptel--tool-result-p . WAIT)
+    (TOOL . ((t                       . TRET)))
+    (TRET . ((,#'gptel--error-p       . ERRS)
+             (,#'gptel--tool-result-p . WAIT)
              (t                       . DONE))))
   "Alist specifying gptel's default state transition table for requests.
 
@@ -2811,6 +2811,7 @@ PROCESS and _STATUS are process parameters."
         (plist-put info :error
                    (format "Curl failed with exit code %d. See Curl manpage for details."
                            exit-status))
+        (plist-put info :status "Curl failure")
         (with-demoted-errors "gptel callback error: %S"
           (funcall (plist-get info :callback) nil info)))
        ;; Finish handling a successful streaming response
@@ -2984,6 +2985,7 @@ PROCESS and _STATUS are process parameters."
           (plist-put proc-info :error
                      (format "Curl failed with exit code %d. See Curl manpage for details."
                              exit-status))
+          (plist-put proc-info :status "Curl failure")
           (gptel--fsm-transition fsm)   ;WAIT -> TYPE
           (with-demoted-errors "gptel callback error: %S"
             (funcall proc-callback nil proc-info))))
