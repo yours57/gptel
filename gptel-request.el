@@ -724,11 +724,16 @@ See `gptel-backend'."
   :type '(repeat string))
 
 (defconst gptel-curl--common-args
-  (if (memq system-type '(windows-nt ms-dos))
-      '("--disable" "--location" "--silent" "-XPOST"
-        "-y7200" "-Y1" "-D-")
+  (cond
+   ((memq system-type '(windows-nt ms-dos))
+    '("--disable" "--location" "--silent" "-XPOST"
+      "-y7200" "-Y1" "-D-"))
+   ((eq system-type 'darwin)
     '("--disable" "--location" "--silent" "--compressed"
-      "-XPOST" "-y7200" "-Y1" "-D-"))
+      "-XPOST" "-y7200" "-Y1" "-N" "-D-"))
+   (t
+    '("--disable" "--location" "--silent" "--compressed"
+      "-XPOST" "-y7200" "-Y1" "-D-")))
   "Arguments always passed to Curl for gptel queries.")
 
 (defvar gptel--link-type-cache nil
@@ -813,6 +818,26 @@ when including context from these major modes.")
     `(let ((json-false :json-false)
            (json-null  :null))
       (json-encode ,object))))
+
+(defmacro gptel--maybe-funcall (func-or-sym &rest args)
+  "If FUNC-OR-SYM is a function, call it with ARGS.
+
+Otherwise, evaluate it as a variable."
+  `(if (functionp ,func-or-sym)
+       ;; TODO(v1.0) Remove this condition-case.  This arity check is for
+       ;; benefit of users who have personal customizations touching gptel's
+       ;; internal API re: backend header and url functions.
+       (condition-case nil
+           (apply ,func-or-sym (list ,@args))
+         (wrong-number-of-arguments
+          (message "Displaying warning")
+          (display-warning
+           'gptel (format "%s should accept %d arguments, but accepts %d"
+                          (if (symbolp ,func-or-sym) (format "Function %s" ,func-or-sym)
+                            "gptel backend function")
+                          (length ',args) (car (func-arity ,func-or-sym))))
+          (funcall ,func-or-sym)))
+     ,func-or-sym))
 
 (defun gptel--process-models (models)
   "Convert items in MODELS to symbols with appropriate properties."
@@ -2523,8 +2548,7 @@ the response is inserted into the current buffer after point."
          (url-request-extra-headers
           (append '(("Content-Type" . "application/json"))
                   (when-let* ((header (gptel-backend-header gptel-backend)))
-                    (if (functionp header)
-                        (funcall header) header))))
+                    (gptel--maybe-funcall header info))))
          (callback (or (plist-get info :callback) ;if not the first run
                        #'gptel--insert-response)) ;default callback
          ;; NOTE: We don't need the decode-coding-string dance here since we
@@ -2545,8 +2569,7 @@ the response is inserted into the current buffer after point."
       (gptel--log url-request-data "request body"))
     (let ((proc-buf
            (url-retrieve (let ((backend-url (gptel-backend-url gptel-backend)))
-                           (if (functionp backend-url)
-                               (funcall backend-url) backend-url))
+                           (gptel--maybe-funcall backend-url info))
                          (lambda (_)
                            (set-buffer-multibyte t)
                            (set-buffer-file-coding-system 'utf-8-unix)
@@ -2653,8 +2676,7 @@ If INCLUDE-HEADERS is non-nil, include headers with the -H option."
          (gptel-model (plist-get info :model))
          (gptel-stream (plist-get info :stream))
          (url (let ((backend-url (gptel-backend-url gptel-backend)))
-                (if (functionp backend-url)
-                    (funcall backend-url) backend-url)))
+                (gptel--maybe-funcall backend-url info)))
          (data-json (decode-coding-string (gptel--json-encode data) 'utf-8 t)))
     (when gptel-log-level (gptel--log data-json "request body"))
     (append
@@ -2665,12 +2687,11 @@ If INCLUDE-HEADERS is non-nil, include headers with the -H option."
           for (key . val) in
           (append '(("Content-Type" . "application/json"))
                   (when-let* ((header (gptel-backend-header gptel-backend)))
-                    (if (functionp header)
-                        (funcall header) header)))
+                    (gptel--maybe-funcall header info)))
           collect (format "-H%s: %s" key val))
        (list "-H@-"))
      (and-let* ((curl-args (gptel-backend-curl-args gptel-backend)))
-       (if (functionp curl-args) (funcall curl-args) curl-args))
+       (gptel--maybe-funcall curl-args))
      (list (format "-w(%s . %%{size_header})" uuid))
      (if (< (string-bytes data-json) gptel-curl-file-size-threshold)
          (list (format "-d%s" data-json))
@@ -2733,8 +2754,7 @@ the response is inserted into the current buffer after point."
              (headers
               (append '(("Content-Type" . "application/json"))
                       (when-let* ((header (gptel-backend-header backend)))
-                        (if (functionp header)
-                            (funcall header) header)))))
+                        (gptel--maybe-funcall header info)))))
         (when (eq gptel-log-level 'debug)
           (gptel--log (gptel--json-encode
                        (mapcar (lambda (pair) (cons (intern (car pair)) (cdr pair)))
