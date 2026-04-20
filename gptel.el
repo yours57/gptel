@@ -2084,10 +2084,7 @@ for tool call results.  INFO contains the state of the request."
                                  "\n")) ;start of response
                            ((not tool-marker) gptel-response-separator)
                            ((and (not (= tracking-marker tool-marker))
-                                 (save-excursion ;not consecutive tool result blocks
-                                   (goto-char tool-marker)
-                                   (skip-chars-forward " \r\t\n")
-                                   (>= (point) tracking-marker)))
+                                 (not (eq (char-before tracking-marker) ?\n)))
                             gptel-response-separator)))
                     (tool-use
                      ;; TODO(tool) also check args since there may be more than
@@ -2183,6 +2180,19 @@ overlay in the query buffer."
             (mapconcat (lambda (name) (propertize name 'face 'font-lock-keyword-face))
                        names (propertize ", " 'face 'mode-line-emphasis))
             (propertize ")" 'face 'mode-line-emphasis)))))))
+  ;; Clear the overlays first, because we need the buffer to be cleaned up
+  ;; before inserting synchronous tool results.
+  (when (and (overlayp ov) (overlay-buffer ov))
+    (with-current-buffer (overlay-buffer ov)
+      (when-let* ((preview-handles (overlay-get ov 'previews)))
+        (dolist (func-to-handle preview-handles)
+          (when (car func-to-handle) (apply func-to-handle))))
+      (dolist (prompt-ov (overlay-get ov 'prompt))
+        (when-let* (((overlay-buffer prompt-ov))
+                    (inhibit-read-only t))
+          (delete-region (overlay-start prompt-ov)
+                         (overlay-end prompt-ov)))))
+    (delete-overlay ov))
   (message "Continuing query...")
   (cl-loop for (tool-spec arg-plist process-tool-result) in tool-calls
            for arg-values = (gptel--map-tool-args tool-spec arg-plist)
@@ -2194,18 +2204,7 @@ overlay in the query buffer."
                     (condition-case errdata
                         (apply (gptel-tool-function tool-spec) arg-values)
                       (error (mapconcat #'gptel--to-string errdata " ")))))
-               (funcall process-tool-result result))))
-  (when (and (overlayp ov) (overlay-buffer ov))
-    (with-current-buffer (overlay-buffer ov)
-      (when-let* ((preview-handles (overlay-get ov 'previews)))
-        (dolist (func-to-handle preview-handles)
-          (when (car func-to-handle) (apply func-to-handle))))
-      (dolist (prompt-ov (overlay-get ov 'prompt))
-        (when-let* (((overlay-buffer prompt-ov))
-                    (inhibit-read-only t))
-          (delete-region (overlay-start prompt-ov)
-                         (overlay-end prompt-ov)))))
-    (delete-overlay ov)))
+               (funcall process-tool-result result)))))
 
 (defun gptel--reject-tool-calls (&optional _tool-calls ov)
   "Cancel pending tool-calls.
@@ -2411,7 +2410,20 @@ TOOL-CALLS."
 
 ;;; Presets
 ;;;; Presets implementation
-(defvar gptel--known-presets nil
+(defvar gptel--known-presets
+  '((gptel-default
+     :description "Use gptel's default configuration."
+     :context nil :use-context system
+     :tools nil :use-tools t
+     :temperature nil :max-tokens nil
+     :num-messages-to-send nil
+     :request-params nil
+     :org-convert-response t
+     :track-media nil
+     :track-response t
+     :system nil
+     :stream t
+     :cache nil))
   "Alist of presets for gptel.
 
 Each entry maps a preset name (a symbol) to a plist of
@@ -2660,9 +2672,8 @@ PRESET is the name of a preset, or a spec (plist) of the form
       (pcase key
         ((or :description :pre :post))
         (:parents
-         (mapc (lambda (parent-preset)
-                 (nconc syms (gptel--preset-syms parent-preset)))
-               (ensure-list val)))
+         (setq syms
+               (nconc syms (mapcan #'gptel--preset-syms (ensure-list val)))))
         (:system (push 'gptel--system-message syms))
         (_ (if-let* ((var (or (intern-soft
                                (concat "gptel-" (substring (symbol-name key) 1)))
