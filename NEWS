@@ -57,6 +57,9 @@
 
 ** New models and backends
 
+- Deepseek backend: Add support for =deepseek-v4-flash=,
+  =deepseek-v4-pro=.
+
 - Anthropic backend: Add support for =claude-opus-4.7=.
 
 - xAI backend: Add support for =grok-4-1-fast-reasoning=,
@@ -71,11 +74,22 @@
 - Gemini backend: Add support for =gemini-3.1-flash-lite-preview=;
   add deprecation notice for =gemini-3-pro-preview=.
 
-- OpenAI backend: Add support for =gpt-5.3-chat-latest=, =gpt-5.4=,
-  =gpt-5.4-pro=, =gpt-5.4-mini=, =gpt-5.4-nano=. =gpt-5.2=,
-  =gpt-5-mini=, =gpt-5-nano= and =o3-pro=.
+- OpenAI backend: Add support for =gpt-5.5=, =gpt-5.5-pro=,
+  =gpt-5.3-chat-latest=, =gpt-5.4=, =gpt-5.4-pro=, =gpt-5.4-mini=,
+  =gpt-5.4-nano=. =gpt-5.2=, =gpt-5-mini=, =gpt-5-nano= and =o3-pro=.
 
 ** New features and UI changes
+
+- gptel now displays token usage in the header-line when using
+  gptel-mode.  This includes the tokens sent, cached tokens sent (if
+  any) and tokens received.  The displayed totals are per-request or per
+  session/buffer, and you can switch between the two by clicking the
+  display.  Hovering the mouse over the display will show both in a
+  tooltip.
+
+  Displaying costs in currency instead of tokens is not yet supported
+  because many backends do not return the required information (cache
+  creation details, etc).
 
 - New command ~gptel-preset~ to choose a gptel preset to apply, or save
   gptel's current settings as a preset.
