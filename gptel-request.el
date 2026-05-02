@@ -2154,7 +2154,7 @@ be used to rerun or continue the request at a later time."
            ((consp prompt)
             ;; (gptel--parse-list gptel-backend prompt)
             (gptel--with-buffer-copy buffer nil nil
-              ;; TEMP Decide on the annoated prompt-list format
+              ;; TEMP Decide on the annotated prompt-list format
               (gptel--parse-list-and-insert prompt)
               (setq major-mode 'fundamental-mode) ;Avoid mode-specific behavior
               (current-buffer)))))
@@ -2362,8 +2362,10 @@ conversation.
 
 PROMPTS is typically the input to `gptel-request', either a list of strings
 representing a conversation with alternate prompt/response turns, or a list of
-lists with explicit roles (prompt/response/tool).  See the documentation of
-`gptel-request' for the latter."
+lists with explicit roles (prompt/response/tool).
+
+See `gptel-request' for the former.  Support for the latter format is
+experimental."
   (if (stringp (car prompts))           ; Simple format, list of strings
       (cl-loop for text in prompts
                for response = nil then (not response)
