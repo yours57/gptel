@@ -2383,9 +2383,9 @@ lists with explicit roles (prompt/response/tool).  See the documentation of
          (insert gptel-response-separator
                  (propertize
                   (concat
-                   "(:name " (plist-get call :name) " :args "
-                   (prin1-to-string (plist-get call :args)) ")\n\n"
-                   (plist-get call :result))
+                   (prin1-to-string `( :name ,(plist-get call :name)
+                                       :args ,(plist-get call :args)))
+                   "\n\n" (plist-get call :result))
                   'gptel `(tool . ,(plist-get call :id)))))))))
 
 (cl-defgeneric gptel--parse-list (backend prompt-list)
