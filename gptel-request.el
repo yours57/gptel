@@ -276,11 +276,12 @@ call `gptel-send' with a prefix argument."
   :type '(choice (natnum :tag "Specify Token count")
                  (const :tag "Default" nil)))
 
-(defcustom gptel-temperature 1.0
+(defcustom gptel-temperature nil
   "\"Temperature\" of the LLM response.
 
-This is a number between 0.0 and 2.0 that controls the randomness
-of the response, with 2.0 being the most random.
+This is a number between 0.0 and 2.0 that controls the randomness of the
+response, with 2.0 being the most random.  It can also be nil for the
+LLM API's default value.
 
 To set the temperature for a chat session interactively call
 `gptel-send' with a prefix argument."
@@ -2676,9 +2677,10 @@ See `gptel-curl--get-response' for its contents.")
                 (string-trim resp))
               http-status http-msg))
        ((and-let* ((error-data
-                    (cond ((plistp response) (or (plist-get response :error)
-                                                 (plist-get response :message)
-                                                 (plist-get response :Message)))
+                    (cond ((plistp response) (or (plist-get response :error)     ; generic
+                                                 (plist-get response :detail)    ; openai-oauth
+                                                 (plist-get response :message)   ; bedrock
+                                                 (plist-get response :Message))) ; bedrock
                           ((arrayp response)
                            (cl-some (lambda (el) (plist-get el :error)) response)))))
           (list nil http-status http-msg error-data)))
@@ -2900,9 +2902,10 @@ PROCESS and _STATUS are process parameters."
                                             (error 'json-read-error))))
                          (error-data
                           (cond ((plistp response)
-                                 (or (plist-get response :error)
-                                     (plist-get response :message)
-                                     (plist-get response :Message)))
+                                 (or (plist-get response :error)     ; generic
+                                     (plist-get response :detail)    ; openai-oauth
+                                     (plist-get response :message)   ; bedrock
+                                     (plist-get response :Message))) ; bedrock
                                 ((arrayp response)
                                  (cl-some (lambda (el) (plist-get el :error)) response)))))
               (cond
@@ -3096,9 +3099,10 @@ PROC-INFO is a plist with contextual information."
                       (string-trim resp))
                     http-status http-msg))
              ((and-let* ((error-data
-                          (cond ((plistp response) (or (plist-get response :error)
-                                                       (plist-get response :message)
-                                                       (plist-get response :Message)))
+                          (cond ((plistp response) (or (plist-get response :error)     ; generic
+                                                       (plist-get response :detail)    ; openai-oauth
+                                                       (plist-get response :message)   ; bedrock
+                                                       (plist-get response :Message))) ; bedrock
                                 ((arrayp response)
                                  (cl-some (lambda (el) (plist-get el :error)) response)))))
                 (list nil http-status http-msg error-data)))
