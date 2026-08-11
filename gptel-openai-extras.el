@@ -298,10 +298,30 @@ The Deepseek API requires strictly alternating roles (user/assistant) in message
             ;; and not tool calls
             (when-let* ((content1 (plist-get p1 :content))
                         (content2 (plist-get p2 :content)))
-              (plist-put p1 :content
-                         (concat content1 "\n" content2))
+              (plist-put
+               p1 :content
+               (if (vectorp content1)
+                   ;; Case [(:type "text" :text "...")]
+                   (vconcat content1 [(:type "text" :text "\n")] content2)
+                 (concat content1 "\n" content2))) ;all strings
               (setcdr index (cdr rest))))
           (setq index (cdr index)))))))
+
+(cl-defmethod gptel--request-data :around ((_backend gptel-deepseek) prompts)
+  "Modify how structured output JSON schema is specified.
+
+This method works by wrapping the main implementation, passing PROMPTS."
+  (let ((prompts-plist (cl-call-next-method)))
+    (when gptel--schema
+      (let ((response-format
+             (prin1-to-string (plist-get prompts-plist :response_format))))
+        (plist-put prompts-plist :response_format (list :type "json_object"))
+        (cl-callf (lambda (system)
+                    (concat system
+                            "\n\n<response_format>Required JSON schema for response:\n\n"
+                            response-format "\n</response_format>"))
+            (plist-get (aref (plist-get prompts-plist :messages) 0) :content))))
+    prompts-plist))
 
 ;;;###autoload
 (cl-defun gptel-make-deepseek
@@ -312,17 +332,7 @@ The Deepseek API requires strictly alternating roles (user/assistant) in message
           (host "api.deepseek.com")
           (protocol "https")
           (endpoint "/v1/chat/completions")
-          (models '((deepseek-reasoner
-                     :capabilities (tool reasoning)
-                     :context-window 128
-                     :input-cost 0.14
-                     :output-cost 0.28)
-                    (deepseek-chat
-                     :capabilities (tool)
-                     :context-window 128
-                     :input-cost 0.14
-                     :output-cost 0.28)
-		    (deepseek-v4-flash
+          (models '((deepseek-v4-flash
                      :capabilities (tool reasoning)
                      :context-window 1000
                      :input-cost 0.14
