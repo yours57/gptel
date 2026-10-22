@@ -118,26 +118,14 @@ This only affects requests originating from Org mode buffers."
   (if (memq system-type '(windows-nt ms-dos)) #x6ffe 130000)
   "Size threshold for using file input with Curl.
 
-Specifies the size threshold for when to use a temporary file to pass data to
-Curl in gptel queries.  If the size of the data to be sent exceeds this
-threshold, the data is written to a temporary file and passed to Curl using the
-`--data-binary' option with a file reference.  Otherwise, the data is passed
-directly as a command-line argument.
+Specifies the size threshold for when to use a temporary file to pass
+data to Curl in gptel queries.  If the size of the data to be sent in
+bytes exceeds this threshold, the data is written to a temporary file
+and passed to Curl using the `--data-binary' option with a file
+reference.  Otherwise, the data is passed directly as a command-line
+argument.
 
-The value is an integer representing the number of bytes.
-
-Adjusting this value may be necessary depending on the environment
-and the typical size of the data being sent in gptel queries.
-A larger value may improve performance by avoiding the overhead of creating
-temporary files for small data payloads, while a smaller value may be needed
-if the command-line argument size is limited by the operating system.
-
-The default of #x8000 for windows comes from Microsoft documentation
-located here:
-https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa
-
-It is set to (#x8000 - #x1000 - 2) to account for other (non-data) Curl
-command line arguments."
+The default of #x8000 on Windows comes from Microsoft's documentation."
   :type 'natnum)
 
 (make-obsolete-variable
@@ -170,11 +158,11 @@ to send the output of shell commands to the LLM.
 
 Transform functions can be synchronous or asynchronous.
 
-Synchronous hook functions must accept zero or one argument: the INFO
-plist for the current request.
+Synchronous hook functions must accept zero or one argument: the state
+ machine (see `gptel-fsm') for the current request.
 
 Asynchronous hook functions must accept two arguments: a callback to
-call after the transformation is complete, and the INFO plist for the
+call after the transformation is complete, and the state machine for the
 current request.
 
 Note that while this set of handlers can certainly be set with a global
@@ -855,7 +843,7 @@ when including context from these major modes.")
         :false-object :json-false)
     (require 'json)
     (defvar json-object-type)
-    (declare-function json-read-from-string "json" ())
+    (declare-function json-read-from-string "json" (string))
     `(let ((json-object-type 'plist))
       (json-read-from-string ,str))))
 
@@ -980,6 +968,23 @@ and \"apikey\" as USER."
     (string s)
     (otherwise (prin1-to-string s))))
 
+(defun gptel--sanitize-raw-bytes (s)
+  "Return string S if it is UTF-8 encodable, else a sanitized copy.
+
+Tool results may contain raw bytes that are not valid UTF-8 (e.g. from
+reading a binary file), which `json-serialize' rejects.  Decode UTF-8
+sequences that arrived undecoded, and replace any remaining raw bytes
+with the Unicode replacement character."
+  (if (not (memq 'eight-bit (find-charset-string s)))
+      s
+    ;; Flatten S to bytes and decode it, recovering valid UTF-8 sequences.
+    (let ((s (decode-coding-string (encode-coding-string s 'utf-8 'nocopy)
+                                   'utf-8 'nocopy)))
+      ;; Raw bytes are left as codepoints in the #x3FFF80..#x3FFFFF range.
+      (if (unencodable-char-position 0 nil 'utf-8 nil s)
+          (replace-regexp-in-string "[\x3FFF80-\x3FFFFF]" "\ufffd" s t t)
+        s))))
+
 (defsubst gptel--intern (s)
   "Intern S, if possible."
   (cl-etypecase s
@@ -1016,19 +1021,51 @@ All values must be numeric or nil.  Returns a new plist."
                                       (or v 0))))))
     rtn))
 
+;; NOTE: Remove after we drop Emacs 27.1 (#724)
+(defmacro gptel--temp-buffer (buf)
+  "Generate a temp buffer BUF.
+
+Compatibility macro for Emacs 27.1."
+  (if (< emacs-major-version 28)
+      `(generate-new-buffer ,buf)
+    `(generate-new-buffer ,buf t)))
+
+(defconst gptel--binary-sniff-bytes 8000
+  "Number of leading bytes examined to detect binary files.
+Matches Git's NUL-detection window.")
+
+(defvar gptel--binary-sniff-buffer nil
+  "Reusable unibyte buffer used by `gptel--file-binary-p'.")
+
 (defun gptel--file-binary-p (path)
-  "Check if file at PATH is readable and binary."
-  ;; HACK Image files with ICC color profiles are characterized as ASCII
-  ;; (#1223), so until we find a better solution we just match these files by
-  ;; extension.
-  (or (string-match-p "\\.\\(jpe?g\\|png\\|gif\\|webp\\)\\'" path)
+  "Check if file at PATH is readable and binary.
+
+Return nil if PATH is missing, unreadable or a directory."
+  (or (let ((case-fold-search t))
+        (string-match-p                 ;Fast heuristic for images (JPEGs etc)
+         "\\.\\(jpe?g\\|png\\|gif\\|webp\\)\\'" path))
       (condition-case nil
-          (with-temp-buffer
-            (insert-file-contents path nil 1 512 'replace)
-            (memq buffer-file-coding-system
-                  '(no-conversion no-conversion-multibyte)))
-        (file-missing (message "File \"%s\" is not readable." path)
-                      nil))))
+          (progn
+            (unless (buffer-live-p gptel--binary-sniff-buffer)
+              (setq gptel--binary-sniff-buffer
+                    (gptel--temp-buffer " *gptel-sniff*"))
+              (with-current-buffer gptel--binary-sniff-buffer
+                (set-buffer-multibyte nil)))
+            (with-current-buffer gptel--binary-sniff-buffer
+              (insert-file-contents-literally ;raw bytes, byte 0 included
+               path nil 0 gptel--binary-sniff-bytes 'replace) ;replace buffer contents
+              (goto-char (point-min))
+              (skip-chars-forward "^\0") ;C-level scan for first NUL
+              (and (not (eobp))          ;NUL found, but...
+                   ;; ...not UTF-16 text: exempt a UTF-16 BOM in the
+                   ;; first two bytes
+                   (not (and (>= (buffer-size) 2)
+                             (let ((b0 (char-after (point-min)))
+                                   (b1 (char-after (+ (point-min) 1))))
+                               (or (and (= b0 #xFF) (= b1 #xFE))
+                                   (and (= b0 #xFE) (= b1 #xFF)))))))))
+        (file-missing (message "File \"%s\" is not readable." path) nil)
+        (file-error nil))))            ;directory, permissions => not binary
 
 (defun gptel--insert-file-string (path)
   "Insert at point the contents of the file at PATH as context."
@@ -1060,7 +1097,10 @@ MODE-SYM is typically a major-mode symbol."
 ;; TODO: Handle and return HTTP errors
 (cl-defun gptel--url-retrieve (url &key method data headers
                                    (content-type "application/json"))
-  "Retrieve URL synchronously with METHOD, DATA and HEADERS."
+  "Retrieve URL synchronously with METHOD, DATA and HEADERS.
+
+CONTENT-TYPE (optional) is the MIME type of the request body,
+defaults to \"application/json\"."
   (declare (indent 1))
   (let ((url-request-method (if (eq method 'post) "POST" "GET"))
         (url-request-data
@@ -1090,15 +1130,6 @@ MODE-SYM is typically a major-mode symbol."
   `(save-excursion
      (skip-syntax-forward "w.")
      ,(macroexp-progn body)))
-
-;; NOTE: Remove after we drop Emacs 27.1 (#724)
-(defmacro gptel--temp-buffer (buf)
-  "Generate a temp buffer BUF.
-
-Compatibility macro for Emacs 27.1."
-  (if (< emacs-major-version 28)
-      `(generate-new-buffer ,buf)
-    `(generate-new-buffer ,buf t)))
 
 ;; This is defined in gptel, but we define it here as well as it's required by
 ;; `gptel--with-buffer-copy'.
@@ -1162,6 +1193,7 @@ non-whitespace content on its line."
   (if (stringp gptel-use-curl) gptel-use-curl "curl"))
 
 (defun gptel--transform-add-context (callback fsm)
+  "Run CALLBACK, adding gptel's context to the request data of FSM."
   (if (and gptel-use-context gptel-context)
       (gptel-context--wrap callback (plist-get (gptel-fsm-info fsm) :data))
     (funcall callback)))
@@ -1899,16 +1931,17 @@ MACHINE is an instance of `gptel-fsm'"
   ;; Reset some flags in info.  This is necessary when reusing fsm's context for
   ;; a second network request: gptel tests for the presence of these flags to
   ;; handle state transitions.  (NOTE: Don't add :uuid to this.)
-  (let ((info (gptel-fsm-info fsm)))
+  (let ((req-info (gptel-fsm-info fsm)))
     (dolist (key '(:tool-result :tool-use :error :http-status :reasoning :tokens))
-      (when (plist-get info key)
-        (plist-put info key nil))))
-  (funcall
-   (if gptel-use-curl
-       #'gptel-curl-get-response
-     #'gptel--url-get-response)
-   fsm)
-  (run-hooks 'gptel-post-request-hook))
+      (when (plist-get req-info key)
+        (plist-put req-info key nil)))
+    (funcall
+     (if gptel-use-curl
+         #'gptel-curl-get-response
+       #'gptel--url-get-response)
+     fsm)
+    (with-current-buffer (plist-get req-info :buffer)
+      (run-hooks 'gptel-post-request-hook))))
 
 (defun gptel--process-tool-call (fsm tool-spec tool-call result)
   "Add tool RESULT to a TOOL-CALL and transition FSM if required.
@@ -1923,7 +1956,7 @@ injects the results into the prompt data and transitions the FSM."
          ;; MAYBE(tool-hooks): Use plist-member for valid nil :result?
          (remaining (cl-loop for call in (plist-get info :tool-use)
                              count (not (plist-get call :result)))))
-    (let ((result (gptel--to-string result)))
+    (let ((result (gptel--sanitize-raw-bytes (gptel--to-string result))))
       ;; FIXME(tool-hooks): If a hook has changed the tool that was called
       ;; tool-spec needs to be updated.
       (push (list tool-spec (plist-get tool-call :args) result)
@@ -2030,11 +2063,17 @@ callback (for the user), and transition the request state."
 ;; Predicates used to find the next state to transition to, see
 ;; `gptel-request--transitions'.
 
-(defun gptel--error-p (info) (plist-get info :error))
+(defun gptel--error-p (info)
+  "Return non-nil if INFO contains an error."
+  (plist-get info :error))
 
-(defun gptel--tool-use-p (info) (plist-get info :tool-use))
+(defun gptel--tool-use-p (info)
+  "Return non-nil if INFO contains pending tool calls."
+  (plist-get info :tool-use))
 
-(defun gptel--tool-result-p (info) (plist-get info :tool-result))
+(defun gptel--tool-result-p (info)
+  "Return non-nil if INFO contains tool results."
+  (plist-get info :tool-result))
 
 
 ;;; Send gptel requests
@@ -2510,7 +2549,7 @@ or
   (list `(:text ,(buffer-substring-no-properties
                   beg end))))
 
-(declare-function markdown-link-at-pos "markdown-mode")
+(declare-function markdown-link-at-pos "ext:markdown-mode")
 (declare-function mailcap-file-name-to-mime-type "mailcap")
 
 (defsubst gptel-markdown--validate-link (link)
@@ -2530,20 +2569,20 @@ first nil value in REST is guaranteed to be correct."
                    (and (gptel--model-capable-p 'url)
                         (member link-type '("http" "https" "ftp")) 'url)))
               (user-check (funcall gptel-markdown-validate-link link))
-              (readablep (or (member link-type '("http" "https" "ftp"))
+              (readablep (or (eq resource-type 'url) ;Assume URLs are reachable
                              (file-remote-p default-directory)
                              (file-remote-p path)
                              (file-readable-p path)))
               (mime-valid
-               (or (eq resource-type 'url)
-                   (and (with-memoization
-                            (alist-get (expand-file-name path)
-                                       gptel--link-type-cache
-                                       nil nil #'string=)
-                          (if (gptel--file-binary-p path) t))
-                        (setq mime (mailcap-file-name-to-mime-type path))
-                        (gptel--model-mime-capable-p mime))
-                   t)))
+               (if (or (eq resource-type 'url)
+                       (with-memoization
+                           (alist-get (expand-file-name path)
+                                      gptel--link-type-cache
+                                      nil nil #'string=)
+                         (gptel--file-binary-p path)))
+                   (progn (setq mime (mailcap-file-name-to-mime-type path))
+                          (gptel--model-mime-capable-p mime))
+                 t)))
         (list t link-type path resource-type user-check readablep mime-valid mime)
       (list nil link-type path resource-type user-check readablep mime-valid mime))))
 
@@ -2987,13 +3026,13 @@ PROCESS and _STATUS are process parameters."
       (cond
        ;; Curl exited with a non-zero status: connection-level failure
        ((not (zerop exit-status))
-        ;; MAYBE: This transition should happen in the process filter, but it's
-        ;; not clear how to reliably detect Curl failure there.
-        (gptel--fsm-transition fsm)     ;Curl failed, WAIT -> TYPE
         (plist-put info :error
                    (format "Curl failed with exit code %d. See Curl manpage for details."
                            exit-status))
         (plist-put info :status "Curl failure")
+        ;; MAYBE: This transition should happen in the process filter, but it's
+        ;; not clear how to reliably detect Curl failure there.
+        (gptel--fsm-transition fsm)     ;Curl failed, WAIT -> TYPE
         (with-demoted-errors "gptel callback error: %S"
           (funcall (plist-get info :callback) nil info)))
        ;; Finish handling a successful streaming response
@@ -3025,6 +3064,9 @@ PROCESS and _STATUS are process parameters."
     (kill-buffer proc-buf)))
 
 (defun gptel-curl--stream-filter (process output)
+  "Process OUTPUT from a Curl PROCESS for gptel.
+
+Run the response callback with any completed chunks in OUTPUT."
   (let* ((fsm (car (alist-get process gptel--request-alist)))
          (proc-info (gptel-fsm-info fsm))
          (callback (or (plist-get proc-info :callback)
